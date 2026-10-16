@@ -52,10 +52,10 @@ Security note: no output (ls/du/prune/localStorage) ever includes a **`value` or
 The pure-logic modules expose a single interface; the CLI and the browser extension share the same modules:
 ```
 src/profile.js       resolveProfile(...)              — modern Chrome path (<profile>/Network/Cookies) + legacyCookiesPath fallback + localStoragePath (Local Storage/leveldb)
-src/cookies.js       readCookieDb, deleteCookies      — readOnly SQLite open → copy → "browser running" hint; deleteCookies write-open + rowid DELETE
+src/cookies.js       readCookieDb, deleteCookies      — readOnly SQLite open → copy → "browser running hint"; SQL returns name/path plus `length()` of value & encrypted_value, never their contents; deleteCookies write-open + rowid DELETE
 src/localStorage.js  readLocalStorage, filterLocalStorage, groupStorage — LevelDB WAL (.log): block record reassembly, LEB128 varint, WriteBatch parse, origin\x00key UTF-16LE, last-write-wins, META rows skipped
 src/filter.js        filterCookies, groupByDomain, totalSize, cookieSize — pure; shared by CLI and extension
-src/report.js        formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes — pure formatting, never leaks values
+src/report.js        formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes, safeCookie — pure formatting; every output is projected through a field allowlist, so values cannot leak
 src/cli.js           parseCommand, run(argv, deps)    — deps injectable (tests run with fake readCookies/readLocalStorage)
 ```
 
@@ -76,7 +76,7 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl �
 
 ## Test
 ```
-npm test          # 89 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model
+npm test          # 93 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 

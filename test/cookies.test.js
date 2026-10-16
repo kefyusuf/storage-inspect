@@ -38,8 +38,24 @@ test("maps cookie rows to the internal shape", () => {
   const cookies = readCookieDb(path);
   assert.deepEqual(cookies.map((c) => c.hostKey), [".example.com", "other.com"]);
   assert.deepEqual(cookies.map((c) => c.name), ["sess", "t"]);
-  assert.deepEqual(cookies.map((c) => c.value), ["abc", "xy"]);
   assert.deepEqual(cookies.map((c) => c.path), ["/", "/app"]);
+  assert.deepEqual(cookies.map((c) => c.size), [7, 3]); // name + value lengths
+});
+
+test("readCookieDb never returns cookie contents", () => {
+  const path = makeCookieDb([
+    { host_key: "a.com", name: "sess", value: "TOPSECRET", path: "/" },
+    { host_key: "b.com", name: "enc", value: "", encrypted_value: new Uint8Array([1, 2, 3]), path: "/" },
+  ]);
+  const cookies = readCookieDb(path);
+  for (const c of cookies) {
+    assert.equal("value" in c, false, "reader must not carry the plaintext value");
+    assert.equal("encrypted_value" in c, false, "reader must not carry the encrypted value");
+  }
+  assert.equal(JSON.stringify(cookies).includes("TOPSECRET"), false);
+  // sizes still know how big the values were, without reading them
+  assert.deepEqual(cookies.map((c) => c.size), [4 + 9, 3 + 0 + 3]); // name + value + encrypted lengths
+  assert.deepEqual(cookies.map((c) => c.hasEncrypted), [false, true]);
 });
 
 test("size includes name + value bytes", () => {

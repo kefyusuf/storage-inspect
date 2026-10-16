@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { run, parseCommand } from "../src/cli.js";
 
 const SAMPLE = [
-  { hostKey: ".example.com", name: "sess", path: "/", size: 9 },
-  { hostKey: ".example.com", name: "cart", path: "/", size: 8 },
-  { hostKey: "ads.net", name: "uid", path: "/", size: 20 },
+  { hostKey: ".example.com", name: "sess", value: "TOPSECRET", path: "/", size: 9 },
+  { hostKey: ".example.com", name: "cart", value: "TOPSECRET", path: "/", size: 8 },
+  { hostKey: "ads.net", name: "uid", value: "TOPSECRET", path: "/", size: 20 },
 ];
 
 const LS = [
@@ -66,6 +66,17 @@ test("run: falls back to legacy Cookies path when Network layout is absent", asy
 test("run: cookies ls --json", async () => {
   const { out } = await run(["cookies", "ls", "--json"], deps());
   assert.equal(JSON.parse(out).length, 3);
+});
+
+test("run: cookies ls --json never leaks cookie values", async () => {
+  const { out } = await run(["cookies", "ls", "--json"], deps());
+  assert.ok(!out.includes("TOPSECRET"), "ls json must not print cookie values");
+  assert.equal(JSON.parse(out).every((c) => !("value" in c)), true, "ls json must not carry a value field");
+});
+
+test("run: cookies ls (text) never leaks cookie values", async () => {
+  const { out } = await run(["cookies", "ls"], deps());
+  assert.ok(!out.includes("TOPSECRET"), "ls text must not print cookie values");
 });
 
 test("run: cookies du shows totals", async () => {
