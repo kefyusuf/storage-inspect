@@ -32,11 +32,24 @@ test("edge linux uses microsoft-edge", () => {
   );
 });
 
-test("brave windows uses Roaming and User Data", () => {
+test("brave windows keeps user data under Local AppData", () => {
+  const r = resolveProfile({ browser: "brave", os: "win32", home: "C:/U/b" });
   assert.equal(
-    resolveProfile({ browser: "brave", os: "win32", home: "C:/U/b" }).cookiesPath,
-    "C:/U/b/AppData/Roaming/BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies",
+    r.cookiesPath,
+    "C:/U/b/AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies",
   );
+  assert.match(r.localStoragePath, /^C:\/U\/b\/AppData\/Local\/BraveSoftware/);
+});
+
+// A wrong root for one browser silently breaks every command for it, so all
+// Chromium siblings must resolve under the same Local AppData root.
+test("every chromium browser resolves under Local AppData on windows", () => {
+  for (const browser of ["chrome", "edge", "brave"]) {
+    assert.match(
+      resolveProfile({ browser, os: "win32", home: "C:/U" }).cookiesPath,
+      /^C:\/U\/AppData\/Local\//,
+    );
+  }
 });
 
 test("profile override is respected", () => {
