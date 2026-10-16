@@ -21,7 +21,7 @@ const BROWSERS = {
     family: "chromium",
     cookieFile: "Cookies",
     roots: {
-      win32: ["AppData", "Roaming", "BraveSoftware", "Brave-Browser", "User Data"],
+      win32: ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"],
       darwin: ["Library", "Application Support", "BraveSoftware", "Brave-Browser"],
       linux: [".config", "BraveSoftware", "Brave-Browser"],
     },
