@@ -4,27 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { filterCookies } from "./filter.js";
 
-function toBytes(value) {
-  if (value == null) return 0;
-  if (typeof value === "string") return value.length;
-  if (value.length != null) return value.length; // Buffer / Uint8Array
-  return 0;
-}
-
-const SELECT = `SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly FROM cookies`;
+// length() is computed by SQLite: a cookie's contents are never loaded into this process.
+const SELECT = `SELECT host_key, name, path, expires_utc, is_secure, is_httponly,
+  length(value) AS value_len, length(encrypted_value) AS encrypted_len FROM cookies`;
 
 function mapRow(r) {
-  const encLen = toBytes(r.encrypted_value);
+  const encLen = r.encrypted_len ?? 0;
   return {
     hostKey: r.host_key,
     name: r.name,
-    value: r.value ?? "",
     path: r.path,
     expiresUtc: Number(r.expires_utc),
     isSecure: !!r.is_secure,
     isHttpOnly: !!r.is_httponly,
     hasEncrypted: encLen > 0,
-    size: toBytes(r.name) + toBytes(r.value) + encLen,
+    size: (r.name?.length ?? 0) + (r.value_len ?? 0) + encLen,
   };
 }
 
@@ -82,7 +76,8 @@ export function deleteCookies(sourcePath, { domain, nameRegex } = {}) {
   try {
     const rows = db
       .prepare(
-        `SELECT rowid AS id, host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly FROM cookies`,
+        `SELECT rowid AS id, host_key, name, path, expires_utc, is_secure, is_httponly,
+          length(value) AS value_len, length(encrypted_value) AS encrypted_len FROM cookies`,
       )
       .all();
     const cookies = rows.map((r) => ({ ...mapRow(r), id: Number(r.id) }));
@@ -91,7 +86,7 @@ export function deleteCookies(sourcePath, { domain, nameRegex } = {}) {
     const del = db.prepare(`DELETE FROM cookies WHERE rowid = ?`);
     for (const c of matched) del.run(c.id);
 
-    const removed = matched.map(({ id, value, ...safe }) => safe);
+    const removed = matched.map(({ id, ...safe }) => safe);
     return { deleted: removed.length, removed };
   } finally {
     db.close();

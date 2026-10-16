@@ -7,7 +7,7 @@ import { resolveProfile } from "./profile.js";
 import { readCookieDb, deleteCookies } from "./cookies.js";
 import { filterCookies, groupByDomain, totalSize } from "./filter.js";
 import { readLocalStorage, filterLocalStorage, groupStorage } from "./localStorage.js";
-import { formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes } from "./report.js";
+import { formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes, safeCookie } from "./report.js";
 
 const HELP = `storage-inspect — inspect browser cookies / localStorage from the terminal
 
@@ -86,11 +86,6 @@ function pickCookiesPath(profile, deps) {
   return candidates.find((p) => deps.exists(p)) ?? profile.cookiesPath;
 }
 
-const stripValue = (c) => {
-  const { value, ...safe } = c;
-  return safe;
-};
-
 export async function run(argv, injected = {}) {
   const deps = { ...defaultDeps(), ...injected };
 
@@ -141,7 +136,7 @@ function runCookies(cmd, profile, deps) {
   const bytes = totalSize(matched);
   if (!cmd.opts.force) {
     if (cmd.opts.json) {
-      const wouldRemove = matched.map(stripValue);
+      const wouldRemove = matched.map(safeCookie);
       return { code: 0, out: JSON.stringify({ dryRun: true, wouldRemove, bytes }, null, 2) };
     }
     const header = `dry-run: would remove ${matched.length} cookies (${humanBytes(bytes)}). Re-run with --force to delete.`;

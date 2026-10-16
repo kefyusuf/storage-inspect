@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes } from "../src/report.js";
 
 const CK = [
-  { hostKey: ".example.com", name: "sess", path: "/", size: 9 },
-  { hostKey: "other.com", name: "t", path: "/app", size: 5 },
+  { hostKey: ".example.com", name: "sess", value: "TOPSECRET", path: "/", size: 9 },
+  { hostKey: "other.com", name: "t", value: "TOPSECRET", path: "/app", size: 5 },
 ];
 
 test("humanBytes formats B and KB", () => {
@@ -25,6 +25,12 @@ test("formatCookies with json returns parseable array", () => {
   const parsed = JSON.parse(formatCookies(CK, { json: true }));
   assert.equal(parsed.length, 2);
   assert.equal(parsed[0].hostKey, ".example.com");
+});
+
+test("formatCookies json strips values like formatStorage does", () => {
+  const out = formatCookies(CK, { json: true });
+  assert.ok(!out.includes("TOPSECRET"), "must not print cookie values");
+  assert.equal(JSON.parse(out).every((c) => !("value" in c)), true, "json must not carry a value field");
 });
 
 test("formatCookies empty shows a marker", () => {

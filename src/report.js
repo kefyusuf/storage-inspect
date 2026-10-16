@@ -11,10 +11,17 @@ export function humanBytes(bytes) {
   return i === 0 ? `${value} ${UNITS[i]}` : `${value.toFixed(1)} ${UNITS[i]}`;
 }
 
+// Cookie values never reach the output: this is the one shape the formatters
+// accept, mirroring formatStorage's origin/key/size projection.
+export function safeCookie({ hostKey, name, path, expiresUtc, isSecure, isHttpOnly, hasEncrypted, size }) {
+  return { hostKey, name, path, expiresUtc, isSecure, isHttpOnly, hasEncrypted, size };
+}
+
 export function formatCookies(list, { json = false } = {}) {
-  if (json) return JSON.stringify(list, null, 2);
-  if (list.length === 0) return "(no cookies)";
-  return list
+  const safe = list.map(safeCookie);
+  if (json) return JSON.stringify(safe, null, 2);
+  if (safe.length === 0) return "(no cookies)";
+  return safe
     .map((c) => `${c.hostKey}  ${c.name}  ${humanBytes(c.size)}  ${c.path}`)
     .join("\n");
 }
