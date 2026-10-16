@@ -20,7 +20,7 @@ const HELP = `storage-inspect — inspect browser cookies / localStorage from th
   storage-inspect localstorage du [filters]             (chromium only, best-effort)
 
 Filters / options:
-  --browser <chrome|edge|brave|firefox>   default: chrome
+  --browser <chrome|edge|brave|firefox>   default: chrome; firefox stores are not readable yet
   --profile <name>                        default: Default (firefox: required)
   --domain <host>                         match entries applying to this host
   --name-regex <pattern>                  filter cookie names (cookies only)
@@ -115,6 +115,12 @@ export async function run(argv, injected = {}) {
 }
 
 function runCookies(cmd, profile, deps) {
+  if (profile.family === "firefox") {
+    return {
+      code: 2,
+      out: "storage-inspect: Firefox cookie stores are not supported yet — the reader only speaks the Chromium cookies schema.",
+    };
+  }
   const storePath = pickCookiesPath(profile, deps);
   let cookies;
   try {
