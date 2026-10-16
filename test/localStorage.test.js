@@ -23,13 +23,33 @@ function record(type, data) {
   return Buffer.concat([head, data]);
 }
 
-function buildWriteBatch(entries) {
-  const parts = [Buffer.alloc(8), Buffer.alloc(4)]; // seq(8) + count(4)
-  parts[1].writeUInt32LE(entries.length, 0);
-  for (const { key, value } of entries) {
-    parts.push(varint(value.length), varint(key.length), key, value);
+// LevelDB WriteBatch payload (db/write_batch.cc): sequence(8) + count(4), then per
+// entry a tag byte FIRST, then varstring(key) and, for a put, varstring(value):
+//   kTypeValue    varstring varstring
+//   kTypeDeletion varstring
+function buildWriteBatch(entries, seq = 1) {
+  const head = Buffer.alloc(12);
+  head.writeBigUInt64LE(BigInt(seq), 0);
+  head.writeUInt32LE(entries.length, 8);
+  const parts = [head];
+  for (const { key, value, op = "put" } of entries) {
+    parts.push(Buffer.from([op === "delete" ? 0 : 1]), varint(key.length), key);
+    if (op !== "delete") parts.push(varint(value.length), value);
   }
   return Buffer.concat(parts);
+}
+
+// Blink writes the script-visible text with one StorageFormat byte in front of it,
+// both in map keys (after the 0x00 that ends the storage key) and in values:
+//   UTF16 = 0, Latin1 = 1   (third_party/blink/renderer/modules/storage/cached_storage_area.cc)
+// The byte is serialized, so a name that itself starts with \x01 is stored as 01 01 ...
+const LATIN1 = 1;
+const UTF16 = 0;
+function mapKey(origin, name, format = LATIN1) {
+  return Buffer.concat([Buffer.from(origin), Buffer.from([0x00, format]), Buffer.from(name, format === LATIN1 ? "latin1" : "utf16le")]);
+}
+function mapValue(text, format = UTF16) {
+  return Buffer.concat([Buffer.from([format]), Buffer.from(text, format === LATIN1 ? "latin1" : "utf16le")]);
 }
 
 function padToBlock(buf) {
@@ -68,9 +88,47 @@ test("parseWriteBatch reads key/value entries", () => {
     { key: Buffer.from("k2"), value: Buffer.from("value2") },
   ]);
   assert.deepEqual(parseWriteBatch(batch), [
-    { key: Buffer.from("k1"), value: Buffer.from("v1") },
-    { key: Buffer.from("k2"), value: Buffer.from("value2") },
+    { op: "put", key: Buffer.from("k1"), value: Buffer.from("v1") },
+    { op: "put", key: Buffer.from("k2"), value: Buffer.from("value2") },
   ]);
+});
+
+test("parseWriteBatch reads the tag-first layout that LevelDB writes", () => {
+  // spelled out byte by byte: seq(8) + count(4) + tag(1) + varstring(key) + varstring(value)
+  const payload = Buffer.from([
+    7, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+    1, 7, 0x61, 0x2e, 0x63, 0x6f, 0x6d, 0x00, 0x6b, // put, key "a.com\0k"
+    4, 0x6f, 0x00, 0x6e, 0x00, // value "on" in UTF-16LE
+  ]);
+  assert.deepEqual(parseWriteBatch(payload), [
+    { op: "put", key: Buffer.from("a.com\u0000k"), value: Buffer.from([0x6f, 0, 0x6e, 0]) },
+  ]);
+});
+
+test("parseWriteBatch rejects the tag-last layout instead of inventing entries", () => {
+  // the shape the old parser assumed (varints swapped, tag at the end) must not
+  // produce entries: a misaligned parse yields plausible-looking garbage.
+  const payload = Buffer.from([
+    7, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+    4, 7, 0x61, 0x2e, 0x63, 0x6f, 0x6d, 0x00, 0x6b, 0x6f, 0x00, 0x6e, 0x00, 1,
+  ]);
+  assert.deepEqual(parseWriteBatch(payload), []);
+});
+
+test("parseWriteBatch rejects a payload that does not describe itself exactly", () => {
+  const batch = buildWriteBatch([{ key: Buffer.from("a.com\u0000k"), value: Buffer.from("v", "utf16le") }]);
+  assert.deepEqual(parseWriteBatch(batch.subarray(0, batch.length - 1)), [], "truncated");
+  assert.deepEqual(parseWriteBatch(Buffer.concat([batch, Buffer.from([0x00])])), [], "trailing byte");
+});
+
+test("parseWriteBatch rejects an unknown tag byte", () => {
+  const batch = buildWriteBatch([{ key: Buffer.from("k"), value: Buffer.from("v") }]);
+  batch[12] = 9; // not kTypeValue(1) / kTypeDeletion(0)
+  assert.deepEqual(parseWriteBatch(batch), []);
+});
+
+test("parseWriteBatch reads an empty batch as no entries", () => {
+  assert.deepEqual(parseWriteBatch(buildWriteBatch([])), []);
 });
 
 test("parseWriteBatch handles multi-byte varint lengths", () => {
@@ -80,21 +138,42 @@ test("parseWriteBatch handles multi-byte varint lengths", () => {
   assert.equal(e.value.length, 200);
 });
 
-test("decodeEntry splits origin/name and decodes UTF-16 value", () => {
-  const key = Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00]), Buffer.from("color")]);
-  const value = Buffer.from("café☕", "utf16le"); // non-ascii to prove UTF-16 decoding
-  const e = decodeEntry(key, value);
-  assert.deepEqual(e, { origin: "https://a.com", key: "color", value: "café☕" });
+test("decodeEntry strips the format byte and decodes UTF-16", () => {
+  const e = decodeEntry(mapKey("https://a.com", "color", UTF16), mapValue("café☕", UTF16));
+  assert.deepEqual(e, { origin: "https://a.com", key: "color", value: "café☕", size: 10 + 10 });
+});
+
+test("decodeEntry decodes Latin-1 names and values", () => {
+  const e = decodeEntry(mapKey("https://a.com", "base_URL"), mapValue("red", LATIN1));
+  assert.deepEqual(e, { origin: "https://a.com", key: "base_URL", value: "red", size: 8 + 3 });
+});
+
+test("decodeEntry keeps a format byte that is part of the name", () => {
+  // an item name may legitimately begin with U+0001; only ONE byte is the tag
+  const e = decodeEntry(mapKey("https://a.com", "\u0001odd"), mapValue("x", LATIN1));
+  assert.equal(e.key, "\u0001odd");
+  assert.equal(e.value, "x");
+});
+
+test("decodeEntry rejects an unknown format byte instead of guessing", () => {
+  const key = Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00, 0x02]), Buffer.from("k")]);
+  assert.equal(decodeEntry(key, mapValue("v")), null);
+});
+
+test("decodeEntry rejects an odd-length UTF-16 payload", () => {
+  const key = Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00, UTF16]), Buffer.from([0x6b, 0x00, 0x6b])]);
+  assert.equal(decodeEntry(key, mapValue("v")), null);
+});
+
+test("decodeEntry returns null for metadata rows", () => {
+  assert.equal(decodeEntry(Buffer.from("META:https://a.com"), mapValue("{}")), null);
+  assert.equal(decodeEntry(Buffer.from("METAACCESS:https://a.com"), mapValue("{}")), null);
 });
 
 test("readLocalStorage decodes Full-record entries from a .log file", () => {
-  const mk = (origin, key, val) => ({
-    key: Buffer.concat([Buffer.from(origin), Buffer.from([0x00]), Buffer.from(key)]),
-    value: Buffer.from(val, "utf16le"),
-  });
   const batch = buildWriteBatch([
-    mk("https://a.com", "color", "red"),
-    mk("https://b.com", "theme", "dark"),
+    { key: mapKey("https://a.com", "color"), value: mapValue("red") },
+    { key: mapKey("https://b.com", "theme"), value: mapValue("dark") },
   ]);
   const log = padToBlock(record(1, batch));
   const files = { "000005.log": log };
@@ -108,33 +187,55 @@ test("readLocalStorage decodes Full-record entries from a .log file", () => {
   );
 });
 
-test("readLocalStorage skips META: records", () => {
+test("readLocalStorage prints no format byte in the key (live Edge store shape)", () => {
+  // exactly what was measured in a real profile: Latin-1 names, UTF-16 values
   const batch = buildWriteBatch([
-    { key: Buffer.from("META:https://a.com"), value: Buffer.from("{}", "utf16le") },
-    { key: Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00]), Buffer.from("k")]), value: Buffer.from("v", "utf16le") },
+    { key: mapKey("_chrome-extension://abcdefghijklmnopqrstuvwxyz", "base_URL"), value: mapValue("https://example.com") },
+  ]);
+  const [entry] = readLocalStorage({ listFiles: () => ["000017.log"], readFile: () => padToBlock(record(1, batch)) });
+  assert.equal(entry.key, "base_URL");
+  assert.ok(!/[\u0000-\u001f]/.test(`${entry.origin}${entry.key}`), "no control byte may reach the output");
+});
+
+test("readLocalStorage skips metadata rows", () => {
+  const batch = buildWriteBatch([
+    { key: Buffer.from("META:https://a.com"), value: mapValue("{}") },
+    { key: Buffer.from("METAACCESS:https://a.com"), value: mapValue("{}") },
+    { key: mapKey("https://a.com", "k"), value: mapValue("v") },
   ]);
   const entries = readLocalStorage({ listFiles: () => ["x.log"], readFile: () => padToBlock(record(1, batch)) });
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].key, "k");
+  assert.deepEqual(entries.map((e) => e.key), ["k"]);
+});
+
+test("readLocalStorage honours delete records", () => {
+  const key = mapKey("https://a.com", "k");
+  const files = {
+    "000003.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("gone") }, { key, op: "delete" }]))),
+  };
+  assert.deepEqual(readLocalStorage({ listFiles: () => Object.keys(files), readFile: (n) => files[n] }), []);
 });
 
 test("readLocalStorage merges and last-write-wins across multiple logs", () => {
-  const mk = (v) => ({ key: Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00]), Buffer.from("k")]), value: Buffer.from(v, "utf16le") });
+  const key = mapKey("https://a.com", "k");
   const files = {
-    "000003.log": padToBlock(record(1, buildWriteBatch([mk("old")]))),
-    "000007.log": padToBlock(record(1, buildWriteBatch([mk("new")]))),
+    "000003.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("old") }]))),
+    "000007.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("new") }]))),
   };
   const entries = readLocalStorage({ listFiles: () => Object.keys(files), readFile: (n) => files[n] });
-  assert.deepEqual(entries, [{ origin: "https://a.com", key: "k", value: "new", size: "k".length + Buffer.byteLength("new", "utf16le") }]);
+  assert.deepEqual(entries, [{ origin: "https://a.com", key: "k", value: "new", size: 1 + 6 }]);
 });
 
-test("readLocalStorage computes size from key + value bytes", () => {
-  const e = { origin: "https://a.com", key: "k", value: "v" };
-  const batch = buildWriteBatch([
-    { key: Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00]), Buffer.from("k")]), value: Buffer.from("v", "utf16le") },
-  ]);
+test("readLocalStorage computes size from key + value bytes, format tags excluded", () => {
+  const batch = buildWriteBatch([{ key: mapKey("https://a.com", "k"), value: mapValue("v") }]);
   const [out] = readLocalStorage({ listFiles: () => ["a.log"], readFile: () => padToBlock(record(1, batch)) });
-  assert.equal(out.size, 1 + 2); // key "k" (1) + utf16 "v" (2 bytes)
+  assert.equal(out.size, 1 + 2); // Latin-1 "k" (1 B) + UTF-16 "v" (2 B); the two tag bytes are not data
+});
+
+test("readLocalStorage drops a row whose format byte is unknown", () => {
+  const key = Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00, 0x7f]), Buffer.from("k")]);
+  const batch = buildWriteBatch([{ key, value: mapValue("v") }, { key: mapKey("https://a.com", "kept"), value: mapValue("v") }]);
+  const entries = readLocalStorage({ listFiles: () => ["a.log"], readFile: () => padToBlock(record(1, batch)) });
+  assert.deepEqual(entries.map((e) => e.key), ["kept"]);
 });
 
 const LS = [
