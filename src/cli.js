@@ -1,0 +1,185 @@
+#!/usr/bin/env node
+import { pathToFileURL } from "node:url";
+import { homedir } from "node:os";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { resolveProfile } from "./profile.js";
+import { readCookieDb, deleteCookies } from "./cookies.js";
+import { filterCookies, groupByDomain, totalSize } from "./filter.js";
+import { readLocalStorage, filterLocalStorage, groupStorage } from "./localStorage.js";
+import { formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes } from "./report.js";
+
+const HELP = `storage-inspect — inspect browser cookies / localStorage from the terminal
+
+  storage-inspect cookies ls     [filters]
+  storage-inspect cookies du     [filters]
+  storage-inspect cookies prune  [filters]              (dry-run: shows what would be deleted)
+  storage-inspect cookies prune  [filters] --force      (actually deletes; close the browser first)
+
+  storage-inspect localstorage ls [filters]             (chromium only, best-effort)
+  storage-inspect localstorage du [filters]             (chromium only, best-effort)
+
+Filters / options:
+  --browser <chrome|edge|brave|firefox>   default: chrome
+  --profile <name>                        default: Default (firefox: required)
+  --domain <host>                         match entries applying to this host
+  --name-regex <pattern>                  filter cookie names (cookies only)
+  --json                                  machine-readable output
+  --force                                 required for prune to write (delete)
+
+Examples:
+  storage-inspect cookies du
+  storage-inspect cookies ls --domain example.com
+  storage-inspect cookies prune --name-regex '^(_ga|fr)'
+  storage-inspect localstorage du --domain example.com`;
+
+const VALUE_FLAGS = { "--browser": "browser", "--profile": "profile", "--domain": "domain", "--name-regex": "nameRegex" };
+const BOOL_FLAGS = { "--json": "json", "--dry-run": "dryRun", "--force": "force" };
+const COMMANDS = {
+  cookies: new Set(["ls", "du", "prune"]),
+  localstorage: new Set(["ls", "du"]),
+};
+
+export function parseCommand(argv) {
+  if (argv.length === 0 || argv[0] === "-h" || argv[0] === "--help") {
+    return { command: "help" };
+  }
+  const command = argv[0];
+  const subs = COMMANDS[command];
+  if (!subs) throw new Error(`unknown command: ${command}`);
+  const sub = argv[1];
+  if (!sub || !subs.has(sub)) throw new Error(`unknown subcommand: ${sub ?? "(none)"}`);
+
+  const opts = { browser: "chrome", profile: undefined, domain: undefined, nameRegex: undefined, json: false, dryRun: command === "cookies" && sub === "prune", force: false };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a in VALUE_FLAGS) {
+      const v = argv[++i];
+      if (v === undefined) throw new Error(`${a} requires a value`);
+      opts[VALUE_FLAGS[a]] = v;
+    } else if (a in BOOL_FLAGS) {
+      opts[BOOL_FLAGS[a]] = true;
+    } else {
+      throw new Error(`unknown flag: ${a}`);
+    }
+  }
+  return { command, sub, opts };
+}
+
+function defaultDeps() {
+  return {
+    os: process.platform,
+    home: homedir(),
+    exists: existsSync,
+    readCookies: readCookieDb,
+    deleteCookies,
+    readLocalStorage: (dir) =>
+      readLocalStorage({
+        listFiles: () => readdirSync(dir),
+        readFile: (name) => readFileSync(join(dir, name)),
+      }),
+  };
+}
+
+function pickCookiesPath(profile, deps) {
+  const candidates = [profile.cookiesPath, profile.legacyCookiesPath].filter(Boolean);
+  return candidates.find((p) => deps.exists(p)) ?? profile.cookiesPath;
+}
+
+const stripValue = (c) => {
+  const { value, ...safe } = c;
+  return safe;
+};
+
+export async function run(argv, injected = {}) {
+  const deps = { ...defaultDeps(), ...injected };
+
+  let cmd;
+  try {
+    cmd = parseCommand(argv);
+  } catch (err) {
+    return { code: 2, out: `storage-inspect: ${err.message}` };
+  }
+  if (cmd.command === "help") return { code: 0, out: HELP };
+
+  let profile;
+  try {
+    profile = resolveProfile({
+      browser: cmd.opts.browser,
+      os: deps.os,
+      home: deps.home,
+      profile: cmd.opts.profile,
+    });
+  } catch (err) {
+    return { code: 2, out: `storage-inspect: ${err.message}` };
+  }
+
+  return cmd.command === "cookies"
+    ? runCookies(cmd, profile, deps)
+    : runLocalStorage(cmd, profile, deps);
+}
+
+function runCookies(cmd, profile, deps) {
+  const storePath = pickCookiesPath(profile, deps);
+  let cookies;
+  try {
+    cookies = deps.readCookies(storePath);
+  } catch (err) {
+    return { code: 1, out: `storage-inspect: ${err.message}` };
+  }
+
+  const matched = filterCookies(cookies, { domain: cmd.opts.domain, namePattern: cmd.opts.nameRegex });
+
+  if (cmd.sub === "ls") {
+    return { code: 0, out: formatCookies(matched, { json: cmd.opts.json }) };
+  }
+  if (cmd.sub === "du") {
+    return { code: 0, out: formatDu(groupByDomain(matched), { json: cmd.opts.json }) };
+  }
+
+  // prune — dry-run by default; only --force actually deletes (needs browser closed).
+  const bytes = totalSize(matched);
+  if (!cmd.opts.force) {
+    if (cmd.opts.json) {
+      const wouldRemove = matched.map(stripValue);
+      return { code: 0, out: JSON.stringify({ dryRun: true, wouldRemove, bytes }, null, 2) };
+    }
+    const header = `dry-run: would remove ${matched.length} cookies (${humanBytes(bytes)}). Re-run with --force to delete.`;
+    return { code: 0, out: [header, formatCookies(matched)].join("\n") };
+  }
+
+  let result;
+  try {
+    result = deps.deleteCookies(storePath, { domain: cmd.opts.domain, nameRegex: cmd.opts.nameRegex });
+  } catch (err) {
+    return { code: 1, out: `storage-inspect: ${err.message}` };
+  }
+  if (cmd.opts.json) {
+    return { code: 0, out: JSON.stringify({ deleted: result.deleted, removed: result.removed }, null, 2) };
+  }
+  return { code: 0, out: `deleted ${result.deleted} cookies (${humanBytes(totalSize(result.removed))}).` };
+}
+
+function runLocalStorage(cmd, profile, deps) {
+  if (!profile.localStoragePath) {
+    return { code: 2, out: `storage-inspect: localStorage is not supported for ${cmd.opts.browser} (chromium only, best-effort).` };
+  }
+  let entries;
+  try {
+    entries = deps.readLocalStorage(profile.localStoragePath);
+  } catch (err) {
+    return { code: 1, out: `storage-inspect: ${err.message}` };
+  }
+  const matched = filterLocalStorage(entries, { domain: cmd.opts.domain });
+
+  if (cmd.sub === "ls") {
+    return { code: 0, out: formatStorage(matched, { json: cmd.opts.json }) };
+  }
+  return { code: 0, out: formatStorageDu(groupStorage(matched), { json: cmd.opts.json }) };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const { code, out } = await run(process.argv.slice(2));
+  console.log(out);
+  process.exit(code);
+}

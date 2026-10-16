@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>storage-inspect</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>storage-inspect</h1>
+      <p class="tag">cookie values are never shown</p>
+    </header>
+
+    <form id="controls">
+      <label>
+        domain
+        <input id="domain" type="text" placeholder="example.com" autocomplete="off" spellcheck="false" />
+      </label>
+      <label>
+        name regex
+        <input id="nameRegex" type="text" placeholder="^(_ga|fr)" autocomplete="off" spellcheck="false" />
+      </label>
+      <div class="row">
+        <button id="refresh" type="submit">List</button>
+        <button id="clear" type="button" class="ghost">All domains</button>
+      </div>
+    </form>
+
+    <section id="summary" class="muted">Enter a domain (or “All domains”) and press List.</section>
+
+    <main>
+      <ul id="list"></ul>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

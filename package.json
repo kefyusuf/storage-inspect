@@ -1,0 +1,12 @@
+{
+  "name": "storage-inspect",
+  "version": "0.1.0",
+  "description": "Inspect & prune browser cookies/localStorage from the terminal.",
+  "type": "module",
+  "bin": { "storage-inspect": "src/cli.js" },
+  "scripts": {
+    "test": "node --test",
+    "build:extension": "node scripts/build-extension.js"
+  },
+  "engines": { "node": ">=22" }
+}
