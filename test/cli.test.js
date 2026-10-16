@@ -14,7 +14,14 @@ const LS = [
 ];
 
 function deps(readCookies = () => SAMPLE) {
-  return { os: "linux", home: "/home/bob", exists: () => true, readCookies, readLocalStorage: () => LS };
+  return {
+    os: "linux",
+    home: "/home/bob",
+    exists: () => true,
+    readCookies,
+    readLocalStorage: () => LS,
+    listDir: () => [],
+  };
 }
 
 test("parseCommand: cookies ls with flags", () => {
@@ -199,6 +206,26 @@ test("run: localstorage reads from the leveldb dir in the profile", async () => 
     readLocalStorage: (dir) => { usedDir = dir; return []; },
   });
   assert.match(usedDir, /google-chrome\/Default\/Local Storage\/leveldb$/);
+});
+
+test("run: localstorage notes the compacted files it did not read", async () => {
+  const { code, out } = await run(["localstorage", "du"], {
+    ...deps(),
+    listDir: () => ["000005.ldb", "000017.log", "MANIFEST-000001"],
+  });
+  assert.equal(code, 0);
+  assert.match(out, /note: 1 \.ldb file\(s\) here hold compacted data that is not read/);
+  const quiet = await run(["localstorage", "du"], deps());
+  assert.ok(!quiet.out.includes("note:"), "no note when nothing was skipped");
+});
+
+test("run: localstorage --json stays machine-readable", async () => {
+  const { out } = await run(["localstorage", "du", "--json"], {
+    ...deps(),
+    listDir: () => ["000005.ldb"],
+  });
+  assert.ok(!out.includes("note:"), "json output must not carry the coverage note");
+  assert.doesNotThrow(() => JSON.parse(out));
 });
 
 test("run: localstorage unsupported for firefox exits 2", async () => {
