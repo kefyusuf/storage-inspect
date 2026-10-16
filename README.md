@@ -46,7 +46,7 @@ storage-inspect localstorage du --domain example.com
 storage-inspect cookies du --browser firefox --profile x.default-release --json
 ```
 
-Security note: no output (ls/du/prune/localStorage) ever includes a **`value` or `encrypted_value`**; only host/origin, name/key, path and size (bytes) are printed. `prune --force` is irreversible, so the default is a dry-run and writing requires `--force`.
+Security note: no output (ls/du/prune/localStorage) ever includes a **`value` or `encrypted_value`**; only host/origin, name/key, path, size (bytes) and the secure/httponly/encrypted flags are printed. `prune --force` is irreversible, so the default is a dry-run and writing requires `--force`.
 
 ## Architecture
 The pure-logic modules expose a single interface; the CLI and the browser extension share the same modules:
@@ -76,12 +76,13 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl �
 
 ## Test
 ```
-npm test          # 93 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model
+npm test          # 95 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 
 ## Out of scope
 - **Decrypting values**: Chrome's `encrypted_value` field needs the OS keychain/DPAPI; this tool is deliberately **read-and-size** only — values are never decrypted or printed.
+- **Cookie expiry**: Chromium writes `expires_utc` as a Windows FILETIME int64 above `Number.MAX_SAFE_INTEGER`, which `node:sqlite` refuses to materialize as a Number, so the reader never selects that column and `--json` omits it. Showing it needs a BigInt read plus a FILETIME→date conversion.
 - **localStorage deletion**: the leveldb read is best-effort (only `.log` records, not `.ldb` SSTables); no deletion is performed.
 - **Firefox localStorage**: Gecko uses a different format; both the CLI and the extension support localStorage on Chromium only.
 

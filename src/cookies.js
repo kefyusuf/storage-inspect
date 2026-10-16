@@ -4,9 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { filterCookies } from "./filter.js";
 
-// length() is computed by SQLite: a cookie's contents are never loaded into this process.
-const SELECT = `SELECT host_key, name, path, expires_utc, is_secure, is_httponly,
-  length(value) AS value_len, length(encrypted_value) AS encrypted_len FROM cookies`;
+// One column list, shared by the read and delete queries: a cookie's contents are
+// never loaded into this process (SQLite returns their lengths instead), and
+// expires_utc is deliberately absent — Chromium writes it as a Windows FILETIME
+// int64 above Number.MAX_SAFE_INTEGER, and node:sqlite throws when materializing it.
+const COLUMNS = `host_key, name, path, is_secure, is_httponly,
+  length(value) AS value_len, length(encrypted_value) AS encrypted_len`;
+
+const SELECT = `SELECT ${COLUMNS} FROM cookies`;
 
 function mapRow(r) {
   const encLen = r.encrypted_len ?? 0;
@@ -14,7 +19,6 @@ function mapRow(r) {
     hostKey: r.host_key,
     name: r.name,
     path: r.path,
-    expiresUtc: Number(r.expires_utc),
     isSecure: !!r.is_secure,
     isHttpOnly: !!r.is_httponly,
     hasEncrypted: encLen > 0,
@@ -74,12 +78,7 @@ export function deleteCookies(sourcePath, { domain, nameRegex } = {}) {
     );
   }
   try {
-    const rows = db
-      .prepare(
-        `SELECT rowid AS id, host_key, name, path, expires_utc, is_secure, is_httponly,
-          length(value) AS value_len, length(encrypted_value) AS encrypted_len FROM cookies`,
-      )
-      .all();
+    const rows = db.prepare(`SELECT rowid AS id, ${COLUMNS} FROM cookies`).all();
     const cookies = rows.map((r) => ({ ...mapRow(r), id: Number(r.id) }));
     const matched = filterCookies(cookies, { domain, namePattern: nameRegex });
 

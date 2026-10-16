@@ -13,8 +13,8 @@ export function humanBytes(bytes) {
 
 // Cookie values never reach the output: this is the one shape the formatters
 // accept, mirroring formatStorage's origin/key/size projection.
-export function safeCookie({ hostKey, name, path, expiresUtc, isSecure, isHttpOnly, hasEncrypted, size }) {
-  return { hostKey, name, path, expiresUtc, isSecure, isHttpOnly, hasEncrypted, size };
+export function safeCookie({ hostKey, name, path, isSecure, isHttpOnly, hasEncrypted, size }) {
+  return { hostKey, name, path, isSecure, isHttpOnly, hasEncrypted, size };
 }
 
 export function formatCookies(list, { json = false } = {}) {

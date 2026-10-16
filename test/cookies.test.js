@@ -73,6 +73,26 @@ test("size counts encrypted_value bytes when value is empty", () => {
   assert.equal(c.hasEncrypted, true);
 });
 
+test("readCookieDb reads real-world expiry rows without crashing", () => {
+  // Chromium writes expires_utc as a Windows FILETIME int64. node:sqlite
+  // refuses to materialize such a column as a JavaScript Number, so selecting
+  // it breaks every real profile read.
+  const path = makeCookieDb([
+    { host_key: "a.com", name: "x", value: "y", path: "/", expires_utc: 13468453248547931n },
+    { host_key: "b.com", name: "z", value: "w", path: "/", expires_utc: 0n },
+  ]);
+  const cookies = readCookieDb(path);
+  assert.equal(cookies.length, 2);
+  assert.equal("expiresUtc" in cookies[0], false, "expiry must not be selected as a Number");
+});
+
+test("deleteCookies works on rows with real-world expiry values", () => {
+  const path = makeCookieDb([
+    { host_key: "a.com", name: "x", value: "y", path: "/", expires_utc: 13468453248547931n },
+  ]);
+  assert.equal(deleteCookies(path, { domain: "a.com" }).deleted, 1);
+});
+
 test("missing file throws a clear error", () => {
   assert.throws(() => readCookieDb("/no/such/Cookies"), /cannot open cookie store/i);
 });
