@@ -153,18 +153,43 @@ test("run: browser flag changes resolved path", async () => {
   assert.match(usedPath, /microsoft-edge\/Default\/Network\/Cookies$/);
 });
 
-// The reader only speaks the Chromium `cookies` table; pointing it at Gecko's
-// moz_cookies produced a confusing "cannot open cookie store" failure.
-test("run: firefox cookies exits 2 without reading the store", async () => {
-  let called = false;
-  const { code, out } = await run(["cookies", "du", "--browser", "firefox", "--profile", "x.default"], {
-    ...deps(() => { called = true; return []; }),
-    deleteCookies: () => { called = true; return { deleted: 0, removed: [] }; },
+// Reading a Gecko store is supported (the reader picks the table from the file);
+// deleting one is not yet, so prune must still refuse instead of half-working.
+test("run: firefox cookies reads the store", async () => {
+  let usedPath;
+  const { code, out } = await run(
+    ["cookies", "du", "--browser", "firefox", "--profile", "x.default"],
+    { ...deps((p) => { usedPath = p; return SAMPLE; }) },
+  );
+  assert.equal(code, 0, out);
+  assert.match(usedPath, /firefox\/x\.default\/cookies\.sqlite$/);
+  assert.match(out, /ads\.net/);
+  assert.ok(!out.includes("TOPSECRET"), "values must not reach the report");
+});
+
+test("run: a missing store is named as missing, not as locked", async () => {
+  // Firefox profiles are named by Firefox itself, so a wrong --profile guess is the
+  // common case. Telling that user to close their browser sends them in circles.
+  const { code, out } = await run(["cookies", "ls", "--browser", "firefox", "--profile", "nope.default"], {
+    ...deps(() => { throw new Error("unable to open database file"); }),
+    exists: () => false,
   });
-  assert.equal(code, 2);
-  assert.match(out, /firefox/i);
-  assert.match(out, /not supported/i);
-  assert.equal(called, false, "the Chromium reader must not be pointed at a Firefox store");
+  assert.equal(code, 1);
+  assert.match(out, /no cookie store at/i);
+  assert.match(out, /default-release/, `a Firefox user needs the profile-shape hint:\n${out}`);
+  assert.ok(!/close it and retry/i.test(out), `must not blame a running browser:\n${out}`);
+});
+
+test("run: a missing Chromium store is not explained with Firefox advice", async () => {
+  // The path shape is the other way round for Chromium (Default, Network/Cookies),
+  // so a Firefox profile example there is noise that distracts from the real cause.
+  const { code, out } = await run(["cookies", "ls", "--browser", "edge"], {
+    ...deps(),
+    exists: () => false,
+  });
+  assert.equal(code, 1);
+  assert.match(out, /no cookie store at/i);
+  assert.ok(!/default-release/i.test(out), `Firefox profile naming must not leak here:\n${out}`);
 });
 
 test("run: firefox prune exits 2 without deleting", async () => {

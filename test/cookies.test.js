@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCookieDb, deleteCookies } from "../src/cookies.js";
+import { filterCookies } from "../src/filter.js";
 
 const dirs = [];
 function makeCookieDb(rows) {
@@ -29,6 +30,143 @@ function makeCookieDb(rows) {
   return path;
 }
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+
+// The schema-17 moz_cookies shape. Upstream does not have one verbatim CREATE
+// TABLE for it — CookiePersistentStorage.cpp builds it from a base table plus
+// per-version migrations — so this DDL is written out from what a real Firefox
+// store reports: its column names and order match PRAGMA table_info of a live
+// Firefox 158 profile exactly. A Firefox store has no encrypted_value: the value
+// column is plaintext TEXT, which makes the length-only read the whole privacy
+// story there.
+function makeFirefoxDb(rows) {
+  const dir = mkdtempSync(join(tmpdir(), "si-fx-"));
+  dirs.push(dir);
+  const path = join(dir, "cookies.sqlite");
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE moz_cookies (
+    id INTEGER PRIMARY KEY, originAttributes TEXT NOT NULL DEFAULT '',
+    name TEXT, value TEXT, host TEXT, path TEXT,
+    expiry INTEGER, lastAccessed INTEGER, creationTime INTEGER,
+    isSecure INTEGER, isHttpOnly INTEGER, inBrowserElement INTEGER DEFAULT 0,
+    sameSite INTEGER DEFAULT 0, schemeMap INTEGER DEFAULT 0,
+    isPartitionedAttributeSet INTEGER DEFAULT 0, updateTime INTEGER,
+    CONSTRAINT moz_uniqueid UNIQUE (name, host, path, originAttributes)
+  )`);
+  const ins = db.prepare(
+    `INSERT INTO moz_cookies (name,value,host,path,expiry,isSecure,isHttpOnly,originAttributes)
+     VALUES (?,?,?,?,?,?,?,?)`,
+  );
+  for (const r of rows) {
+    ins.run(r.name, r.value, r.host, r.path ?? "/", r.expiry ?? 0,
+      r.isSecure ?? 0, r.isHttpOnly ?? 0, r.originAttributes ?? "");
+  }
+  db.close();
+  return path;
+}
+
+test("reads a Firefox store through the same internal shape", () => {
+  const path = makeFirefoxDb([
+    { name: "sess", value: "abc", host: ".example.com", path: "/" },
+    { name: "t", value: "xy", host: "other.com", path: "/app" },
+  ]);
+  const cookies = readCookieDb(path);
+  assert.deepEqual(cookies.map((c) => c.hostKey), [".example.com", "other.com"]);
+  assert.deepEqual(cookies.map((c) => c.name), ["sess", "t"]);
+  assert.deepEqual(cookies.map((c) => c.path), ["/", "/app"]);
+  assert.deepEqual(cookies.map((c) => c.size), [4 + 3, 1 + 2]); // name + value lengths
+});
+
+test("a Firefox read never carries the plaintext value", () => {
+  const path = makeFirefoxDb([
+    { name: "token", value: "TOPSECRET", host: "a.com" },
+    { name: "empty", value: "", host: "b.com" },
+  ]);
+  const cookies = readCookieDb(path);
+  for (const c of cookies) {
+    assert.equal("value" in c, false, "reader must not carry the plaintext value");
+  }
+  assert.equal(JSON.stringify(cookies).includes("TOPSECRET"), false);
+  assert.deepEqual(cookies.map((c) => c.size), [5 + 9, 5 + 0]);
+  assert.deepEqual(cookies.map((c) => c.hasEncrypted), [false, false]);
+});
+
+test("Firefox host matching keeps the Chromium semantics", () => {
+  const path = makeFirefoxDb([
+    { name: "dom", value: "y", host: ".example.com" },
+    { name: "only", value: "x", host: "example.com" },
+    { name: "sub", value: "z", host: ".sub.example.com" },
+  ]);
+  assert.deepEqual(
+    filterCookies(readCookieDb(path), { domain: "sub.example.com" }).map((c) => c.name),
+    ["dom", "sub"],
+  );
+});
+
+test("reads an old-shape moz_cookies table", () => {
+  // A profile Firefox has not opened in years keeps fewer columns: originAttributes,
+  // baseDomain, schemeMap and updateTime all arrived later. The reader only depends
+  // on host/name/path/isSecure/isHttpOnly/value, so this must still work — and the
+  // test is what proves that dependency list, not an assumption about migrations.
+  const dir = mkdtempSync(join(tmpdir(), "si-fx-old-"));
+  dirs.push(dir);
+  const path = join(dir, "cookies.sqlite");
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE moz_cookies (
+    id INTEGER PRIMARY KEY, name TEXT, value TEXT, host TEXT, path TEXT,
+    expiry INTEGER, lastAccessed INTEGER, isSecure INTEGER, isHttpOnly INTEGER
+  )`);
+  db.prepare(`INSERT INTO moz_cookies (name,value,host,path,expiry,isSecure,isHttpOnly)
+              VALUES (?,?,?,?,?,?,?)`).run("old", "abcd", ".legacy.com", "/", 0, 0, 0);
+  db.close();
+
+  const [c] = readCookieDb(path);
+  assert.deepEqual(c, {
+    hostKey: ".legacy.com",
+    name: "old",
+    path: "/",
+    isSecure: false,
+    isHttpOnly: false,
+    hasEncrypted: false,
+    size: 3 + 4,
+  });
+});
+
+test("deleteCookies works on a Firefox store too", () => {
+  // The CLI still refuses `prune --browser firefox` until this has been measured on
+  // a real profile, but the shared schema list means the write path already speaks
+  // moz_cookies — so that claim is tested here rather than left as dead code.
+  const path = makeFirefoxDb([
+    { name: "ga", value: "1", host: ".tracker.com" },
+    { name: "uid", value: "2", host: ".tracker.com" },
+    { name: "sess", value: "s", host: "bank.com" },
+  ]);
+  const res = deleteCookies(path, { domain: "tracker.com" });
+  assert.equal(res.deleted, 2);
+  assert.deepEqual(res.removed.map((c) => c.name).sort(), ["ga", "uid"]);
+  assert.equal(JSON.stringify(res.removed).includes('"value"'), false);
+  assert.deepEqual(readCookieDb(path).map((c) => c.hostKey), ["bank.com"]);
+});
+
+test("a store with neither cookie table says so", () => {
+  const dir = mkdtempSync(join(tmpdir(), "si-nofx-"));
+  dirs.push(dir);
+  const path = join(dir, "cookies.sqlite");
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE moz_hosts (id INTEGER PRIMARY KEY, host TEXT)`);
+  db.close();
+  assert.throws(
+    () => readCookieDb(path),
+    /no cookie table/i,
+    "a wrong-file problem must be named as one",
+  );
+  // The lock hint is the trap: a file that opens fine but holds no cookie table is
+  // not locked, and telling the user to close their browser is a lie.
+  assert.throws(
+    () => readCookieDb(path),
+    (err) => !/close it and retry/i.test(err.message),
+    "must not blame a running browser for a file that opened",
+  );
+});
 
 test("maps cookie rows to the internal shape", () => {
   const path = makeCookieDb([
