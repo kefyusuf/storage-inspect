@@ -29,18 +29,25 @@ async function refresh() {
     return;
   }
   summary.textContent = `${res.count} cookies · ${humanBytes(res.bytes)}${domain ? ` · ${domain}` : " · all domains"}`;
+  // Remember what the list actually is, so a later delete addresses the rows and
+  // the name filter the user saw instead of the values now in the input boxes.
+  view = { cookies: res.matched, nameRegex: nameRegex || undefined };
   render(res.groups, res.matched);
 }
 
 // Group headers show counts/sizes; each cookie row shows host, name, path and a
 // delete button. The cookie value is intentionally absent from `matched`.
+// The delete buttons carry only the index into `view.cookies`, so a removal
+// addresses the cookie exactly as it was listed — partition key included.
+let view = { cookies: [], nameRegex: undefined };
+
 function render(groups, matched) {
   const byHost = new Map();
-  for (const c of matched) {
+  matched.forEach((c, i) => {
     const arr = byHost.get(c.hostKey) ?? [];
-    arr.push(c);
+    arr.push(i);
     byHost.set(c.hostKey, arr);
-  }
+  });
 
   const frag = document.createDocumentFragment();
   for (const g of groups) {
@@ -58,12 +65,14 @@ function render(groups, matched) {
     delAll.className = "ghost danger";
     delAll.textContent = "delete all";
     delAll.dataset.host = g.hostKey;
+    delAll.dataset.count = String(g.count);
     head.append(delAll);
     li.append(head);
 
     const ul = document.createElement("ul");
     ul.className = "cookies";
-    for (const c of byHost.get(g.hostKey) ?? []) {
+    for (const i of byHost.get(g.hostKey) ?? []) {
+      const c = matched[i];
       const row = document.createElement("li");
       const name = document.createElement("span");
       name.className = "name";
@@ -77,11 +86,7 @@ function render(groups, matched) {
       const del = document.createElement("button");
       del.className = "ghost";
       del.textContent = "×";
-      del.dataset.hostKey = c.hostKey;
-      del.dataset.name = c.name;
-      del.dataset.path = c.path;
-      del.dataset.secure = String(c.secure);
-      del.dataset.storeId = c.storeId;
+      del.dataset.index = String(i);
       row.append(name, path, size, del);
       ul.append(row);
     }
@@ -93,25 +98,26 @@ function render(groups, matched) {
   list.querySelectorAll("button").forEach((btn) => btn.addEventListener("click", onClickDelete));
 }
 
+// The list is refreshed first, then the result is written over it: a removal
+// that the store refused has to stay on screen instead of being hidden by the
+// new counts.
 async function onClickDelete(e) {
   const btn = e.currentTarget;
   if (btn.textContent === "delete all") {
-    const domain = btn.dataset.host.replace(/^\./, "");
-    const ok = window.confirm(`Delete every cookie for ${domain}?`);
-    if (!ok) return;
-    const res = await send({ type: "removeDomain", domain });
+    const hostKey = btn.dataset.host;
+    if (!window.confirm(`Delete the ${btn.dataset.count} cookies listed for ${hostKey}?`)) return;
+    const res = await send({ type: "removeGroup", hostKey, nameRegex: view.nameRegex });
+    await refresh();
     if (res?.error) summary.textContent = res.error;
-  } else {
-    const cookie = {
-      hostKey: btn.dataset.hostKey,
-      name: btn.dataset.name,
-      path: btn.dataset.path,
-      secure: btn.dataset.secure === "true",
-      storeId: btn.dataset.storeId,
-    };
-    await send({ type: "remove", cookie });
+    else if (res && res.deleted !== res.wanted) summary.textContent = `removed ${res.deleted} of ${res.wanted} on ${hostKey}`;
+    return;
   }
-  refresh();
+
+  const cookie = view.cookies[Number(btn.dataset.index)];
+  const res = await send({ type: "remove", cookie });
+  await refresh();
+  if (res?.error) summary.textContent = res.error;
+  else if (res && !res.ok) summary.textContent = `could not remove ${cookie.name} on ${cookie.hostKey}`;
 }
 
 $("controls").addEventListener("submit", (e) => {

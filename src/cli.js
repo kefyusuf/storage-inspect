@@ -14,7 +14,7 @@ const HELP = `storage-inspect — inspect browser cookies / localStorage from th
   storage-inspect cookies ls     [filters]
   storage-inspect cookies du     [filters]
   storage-inspect cookies prune  [filters]              (dry-run: shows what would be deleted)
-  storage-inspect cookies prune  [filters] --force      (actually deletes; close the browser first)
+  storage-inspect cookies prune  [filters] --force      (deletes in one transaction; close the browser first)
 
   storage-inspect localstorage ls [filters]             (chromium only; the write-ahead log tail, .ldb not read)
   storage-inspect localstorage du [filters]             (totals per origin)
@@ -154,7 +154,7 @@ function runCookies(cmd, profile, deps) {
   try {
     result = deps.deleteCookies(storePath, { domain: cmd.opts.domain, nameRegex: cmd.opts.nameRegex });
   } catch (err) {
-    return { code: 1, out: `storage-inspect: ${err.message}` };
+    return { code: 1, out: `storage-inspect: ${err.message} (no cookies were deleted)` };
   }
   if (cmd.opts.json) {
     return { code: 0, out: JSON.stringify({ deleted: result.deleted, removed: result.removed }, null, 2) };

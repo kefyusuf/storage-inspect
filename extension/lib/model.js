@@ -10,6 +10,7 @@ export function toInternal(cookie) {
     size: (cookie.name?.length ?? 0) + (cookie.value?.length ?? 0),
     secure: cookie.secure ?? false,
     storeId: cookie.storeId,
+    partitionKey: cookie.partitionKey,
   };
 }
 
@@ -19,9 +20,27 @@ export function summarize(chromeCookies, { domain, namePattern } = {}) {
   return { matched, groups: groupByDomain(matched), bytes: totalSize(matched) };
 }
 
+// A group header counts one host key, and only an exact match addresses it:
+// the domain matcher lets ".example.com" answer for "sub.example.com" too.
+export function filterByHostKey(cookies, hostKey) {
+  return cookies.filter((c) => c.hostKey === hostKey);
+}
+
 // chrome.cookies.remove needs a creation URL; reconstruct it from safe fields.
 export function removeUrl(cookie) {
   const scheme = cookie.secure ? "https" : "http";
   const host = (cookie.hostKey || "").replace(/^\./, "");
   return `${scheme}://${host}${cookie.path || "/"}`;
+}
+
+// A partitioned (CHIPS) cookie is only addressed together with its partition
+// key: left out, remove() targets the unpartitioned copy and resolves to
+// undefined, which reads as success while nothing was deleted.
+export function removeParams(cookie) {
+  return {
+    url: removeUrl(cookie),
+    name: cookie.name,
+    storeId: cookie.storeId,
+    ...(cookie.partitionKey ? { partitionKey: cookie.partitionKey } : {}),
+  };
 }
