@@ -7,6 +7,7 @@ const OP_DELETE = 0;
 const OP_PUT = 1;
 const FORMAT_UTF16 = 0;
 const FORMAT_LATIN1 = 1;
+const MAX_SEQUENCE = BigInt(Number.MAX_SAFE_INTEGER);
 
 function readVarint(buf, offset) {
   let result = 0;
@@ -55,9 +56,15 @@ export function readRecords(buf) {
 //   kTypeValue varstring varstring | kTypeDeletion varstring   (db/write_batch.cc)
 // A payload that does not describe itself exactly is dropped whole: a misaligned
 // parse yields entries that look like real origins but are not.
+//
+// Each entry gets its own sequence number: the batch inserter starts at the header
+// sequence and steps once per write (db/write_batch.cc:118-134), so entry i is
+// base + i. That number is what orders a WAL write against a compacted .ldb one.
 export function parseWriteBatch(payload) {
   if (payload.length < 12) return [];
+  const base = payload.readBigUInt64LE(0);
   const count = payload.readUInt32LE(8);
+  if (base + BigInt(count) - 1n > MAX_SEQUENCE) return [];
   const entries = [];
   let off = 12;
   for (let i = 0; i < count; i++) {
@@ -73,7 +80,7 @@ export function parseWriteBatch(payload) {
       off = v.next;
       value = v.data;
     }
-    entries.push({ op: op === OP_PUT ? "put" : "delete", key: key.data, value });
+    entries.push({ seq: Number(base) + i, op: op === OP_PUT ? "put" : "delete", key: key.data, value });
   }
   return off === payload.length ? entries : [];
 }

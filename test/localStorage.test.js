@@ -88,9 +88,45 @@ test("parseWriteBatch reads key/value entries", () => {
     { key: Buffer.from("k2"), value: Buffer.from("value2") },
   ]);
   assert.deepEqual(parseWriteBatch(batch), [
-    { op: "put", key: Buffer.from("k1"), value: Buffer.from("v1") },
-    { op: "put", key: Buffer.from("k2"), value: Buffer.from("value2") },
+    { seq: 1, op: "put", key: Buffer.from("k1"), value: Buffer.from("v1") },
+    { seq: 2, op: "put", key: Buffer.from("k2"), value: Buffer.from("value2") },
   ]);
+});
+
+test("parseWriteBatch gives each entry its own sequence number", () => {
+  // db/write_batch.cc: the inserter starts at the batch header's sequence and
+  // steps once per write, so the n-th entry of a batch is header+n, not header.
+  const batch = buildWriteBatch(
+    [
+      { key: Buffer.from("a"), value: Buffer.from("1") },
+      { key: Buffer.from("b"), op: "delete" },
+      { key: Buffer.from("c"), value: Buffer.from("3") },
+    ],
+    41,
+  );
+  assert.deepEqual(parseWriteBatch(batch).map((e) => e.seq), [41, 42, 43]);
+});
+
+test("parseWriteBatch rejects a sequence it cannot count with", () => {
+  // The sequence orders writes against .ldb entries; past 2^53 it is no longer
+  // an integer in JavaScript, so a batch claiming that is not a batch.
+  const batch = buildWriteBatch([{ key: Buffer.from("k"), value: Buffer.from("v") }]);
+  batch.writeBigUInt64LE(2n ** 53n, 0);
+  assert.deepEqual(parseWriteBatch(batch), []);
+});
+
+test("parseWriteBatch rejects the last entry stepping out of the safe range", () => {
+  // base alone is not enough: entry i is base + i, so a batch starting just under
+  // 2^53 overflows on its third write.
+  const batch = buildWriteBatch(
+    [
+      { key: Buffer.from("a"), value: Buffer.from("1") },
+      { key: Buffer.from("b"), value: Buffer.from("2") },
+      { key: Buffer.from("c"), value: Buffer.from("3") },
+    ],
+    BigInt(Number.MAX_SAFE_INTEGER) - 1n,
+  );
+  assert.deepEqual(parseWriteBatch(batch), []);
 });
 
 test("parseWriteBatch reads the tag-first layout that LevelDB writes", () => {
@@ -101,7 +137,7 @@ test("parseWriteBatch reads the tag-first layout that LevelDB writes", () => {
     4, 0x6f, 0x00, 0x6e, 0x00, // value "on" in UTF-16LE
   ]);
   assert.deepEqual(parseWriteBatch(payload), [
-    { op: "put", key: Buffer.from("a.com\u0000k"), value: Buffer.from([0x6f, 0, 0x6e, 0]) },
+    { seq: 7, op: "put", key: Buffer.from("a.com\u0000k"), value: Buffer.from([0x6f, 0, 0x6e, 0]) },
   ]);
 });
 
