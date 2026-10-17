@@ -176,7 +176,20 @@ test("run: a missing store is named as missing, not as locked", async () => {
   });
   assert.equal(code, 1);
   assert.match(out, /no cookie store at/i);
+  assert.match(out, /default-release/, `a Firefox user needs the profile-shape hint:\n${out}`);
   assert.ok(!/close it and retry/i.test(out), `must not blame a running browser:\n${out}`);
+});
+
+test("run: a missing Chromium store is not explained with Firefox advice", async () => {
+  // The path shape is the other way round for Chromium (Default, Network/Cookies),
+  // so a Firefox profile example there is noise that distracts from the real cause.
+  const { code, out } = await run(["cookies", "ls", "--browser", "edge"], {
+    ...deps(),
+    exists: () => false,
+  });
+  assert.equal(code, 1);
+  assert.match(out, /no cookie store at/i);
+  assert.ok(!/default-release/i.test(out), `Firefox profile naming must not leak here:\n${out}`);
 });
 
 test("run: firefox prune exits 2 without deleting", async () => {

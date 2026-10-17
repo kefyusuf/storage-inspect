@@ -126,9 +126,15 @@ async function runCookies(cmd, profile, deps) {
   }
   const storePath = pickCookiesPath(profile, deps);
   if (!deps.exists(storePath)) {
+    // Firefox names its own profiles, so a wrong --profile guess is the common
+    // case there; for Chromium the same guess looks like "Default".
+    const hint =
+      profile.family === "firefox"
+        ? " (firefox profiles look like abc123.default-release)"
+        : "";
     return {
       code: 1,
-      out: `storage-inspect: no cookie store at ${storePath} — wrong browser or profile? (firefox profiles look like abc123.default-release)`,
+      out: `storage-inspect: no cookie store at ${storePath} — wrong browser or profile?${hint}`,
     };
   }
   let cookies;
