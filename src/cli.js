@@ -16,8 +16,8 @@ const HELP = `storage-inspect — inspect browser cookies / localStorage from th
   storage-inspect cookies prune  [filters]              (dry-run: shows what would be deleted)
   storage-inspect cookies prune  [filters] --force      (actually deletes; close the browser first)
 
-  storage-inspect localstorage ls [filters]             (chromium only, best-effort)
-  storage-inspect localstorage du [filters]             (chromium only, best-effort)
+  storage-inspect localstorage ls [filters]             (chromium only; the write-ahead log tail, .ldb not read)
+  storage-inspect localstorage du [filters]             (totals per origin)
 
 Filters / options:
   --browser <chrome|edge|brave|firefox>   default: chrome; firefox stores are not readable yet
@@ -73,6 +73,7 @@ function defaultDeps() {
     exists: existsSync,
     readCookies: readCookieDb,
     deleteCookies,
+    listDir: (dir) => readdirSync(dir),
     readLocalStorage: (dir) =>
       readLocalStorage({
         listFiles: () => readdirSync(dir),
@@ -173,10 +174,18 @@ function runLocalStorage(cmd, profile, deps) {
   }
   const matched = filterLocalStorage(entries, { domain: cmd.opts.domain });
 
-  if (cmd.sub === "ls") {
-    return { code: 0, out: formatStorage(matched, { json: cmd.opts.json }) };
-  }
-  return { code: 0, out: formatStorageDu(groupStorage(matched), { json: cmd.opts.json }) };
+  const out = cmd.sub === "ls"
+    ? formatStorage(matched, { json: cmd.opts.json })
+    : formatStorageDu(groupStorage(matched), { json: cmd.opts.json });
+  if (cmd.opts.json) return { code: 0, out };
+
+  // The WAL only holds recent writes; everything compacted away sits in .ldb
+  // files this reader does not parse, so say so instead of looking complete.
+  const unread = deps.listDir(profile.localStoragePath).filter((f) => f.endsWith(".ldb")).length;
+  const note = unread
+    ? `\n\nnote: ${unread} .ldb file(s) here hold compacted data that is not read — this is the write-ahead log tail only.`
+    : "";
+  return { code: 0, out: out + note };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

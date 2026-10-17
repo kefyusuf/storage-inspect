@@ -3,6 +3,10 @@ const TYPE_FULL = 1;
 const TYPE_FIRST = 2;
 const TYPE_MIDDLE = 3;
 const TYPE_LAST = 4;
+const OP_DELETE = 0;
+const OP_PUT = 1;
+const FORMAT_UTF16 = 0;
+const FORMAT_LATIN1 = 1;
 
 function readVarint(buf, offset) {
   let result = 0;
@@ -10,11 +14,12 @@ function readVarint(buf, offset) {
   let i = offset;
   for (;;) {
     const byte = buf[i++];
-    result |= (byte & 0x7f) << shift;
+    if (byte === undefined) return { value: -1, next: i, oob: true };
+    result += (byte & 0x7f) * 2 ** shift;
     if (!(byte & 0x80)) break;
     shift += 7;
   }
-  return { value: result >>> 0, next: i };
+  return { value: result, next: i };
 }
 
 // LevelDB WAL framing: 32KB blocks, each record = CRC(4) + Length(2) + Type(1) + data.
@@ -45,30 +50,67 @@ export function readRecords(buf) {
   return out;
 }
 
-// WriteBatch payload: sequence(8) + count(4) + per-entry: varint(valueLen) + varint(keyLen) + key + value.
+// LevelDB WriteBatch payload: sequence(8) + count(4), then per entry the tag byte
+// first, a varstring key and — for a put — a varstring value:
+//   kTypeValue varstring varstring | kTypeDeletion varstring   (db/write_batch.cc)
+// A payload that does not describe itself exactly is dropped whole: a misaligned
+// parse yields entries that look like real origins but are not.
 export function parseWriteBatch(payload) {
+  if (payload.length < 12) return [];
   const count = payload.readUInt32LE(8);
-  let off = 12;
   const entries = [];
+  let off = 12;
   for (let i = 0; i < count; i++) {
-    const v = readVarint(payload, off);
-    off = v.next;
-    const k = readVarint(payload, off);
-    off = k.next;
-    const key = payload.subarray(off, off + k.value);
-    off += k.value;
-    const value = payload.subarray(off, off + v.value);
-    off += v.value;
-    entries.push({ key, value });
+    const op = payload[off++];
+    if (op !== OP_PUT && op !== OP_DELETE) return [];
+    const key = readVarString(payload, off);
+    if (!key) return [];
+    off = key.next;
+    let value = null;
+    if (op === OP_PUT) {
+      const v = readVarString(payload, off);
+      if (!v) return [];
+      off = v.next;
+      value = v.data;
+    }
+    entries.push({ op: op === OP_PUT ? "put" : "delete", key: key.data, value });
   }
-  return entries;
+  return off === payload.length ? entries : [];
 }
 
+function readVarString(buf, off) {
+  const len = readVarint(buf, off);
+  if (len.oob || len.next + len.value > buf.length) return null;
+  return { data: buf.subarray(len.next, len.next + len.value), next: len.next + len.value };
+}
+
+// After the 0x00 that ends the storage key — and again in front of every value —
+// Blink writes a single StorageFormat byte before the script-visible text
+// (cached_storage_area.cc: UTF16 = 0, Latin1 = 1). It is serialized, so exactly one
+// byte is consumed: a name that itself starts with U+0001 is stored as 01 01 ...
+function decodeText(buf) {
+  const format = buf[0];
+  const payload = buf.subarray(1);
+  if (format === FORMAT_LATIN1) return { text: payload.toString("latin1"), bytes: payload.length };
+  if (format === FORMAT_UTF16 && payload.length % 2 === 0) return { text: payload.toString("utf16le"), bytes: payload.length };
+  return null;
+}
+
+// Map rows are "<storage_key>\0<format><item name>"; metadata rows ("META:",
+// "METAACCESS:") hold no 0x00 at all and are not user data.
 export function decodeEntry(keyBuf, valueBuf) {
   const sep = keyBuf.indexOf(0x00);
-  const origin = keyBuf.subarray(0, sep).toString("utf8");
-  const key = keyBuf.subarray(sep + 1).toString("utf8");
-  return { origin, key, value: valueBuf.toString("utf16le") };
+  if (sep === -1) return null;
+  const name = decodeText(keyBuf.subarray(sep + 1));
+  if (!name) return null;
+  const value = valueBuf === null ? { text: null, bytes: 0 } : decodeText(valueBuf);
+  if (!value) return null;
+  return {
+    origin: keyBuf.subarray(0, sep).toString("utf8"),
+    key: name.text,
+    value: value.text,
+    size: name.bytes + value.bytes,
+  };
 }
 
 // Best-effort: reads the LevelDB write-ahead log (*.log) only. Entries compacted
@@ -80,14 +122,15 @@ export function readLocalStorage({ listFiles, readFile }) {
   for (const name of logs) {
     const buf = readFile(name);
     for (const record of readRecords(buf)) {
-      for (const { key, value } of parseWriteBatch(record)) {
-        const sep = key.indexOf(0x00);
-        if (sep === -1) continue;
-        const origin = key.subarray(0, sep).toString("utf8");
-        if (origin.startsWith("META:")) continue; // metadata rows, not user data
-        const decoded = decodeEntry(key, value);
-        const id = `${origin}\u0000${decoded.key}`;
-        byEntry.set(id, { origin, key: decoded.key, value: decoded.value, size: decoded.key.length + value.length });
+      for (const { op, key, value } of parseWriteBatch(record)) {
+        const entry = decodeEntry(key, value);
+        if (!entry) continue;
+        const id = `${entry.origin}\u0000${entry.key}`;
+        if (op === "delete") {
+          byEntry.delete(id);
+          continue;
+        }
+        byEntry.set(id, entry);
       }
     }
   }
