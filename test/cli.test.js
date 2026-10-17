@@ -19,8 +19,7 @@ function deps(readCookies = () => SAMPLE) {
     home: "/home/bob",
     exists: () => true,
     readCookies,
-    readLocalStorage: () => LS,
-    listDir: () => [],
+    readLocalStorage: () => ({ entries: LS, skipped: [] }),
   };
 }
 
@@ -238,28 +237,41 @@ test("run: localstorage du shows per-origin totals", async () => {
 
 test("run: localstorage reads from the leveldb dir in the profile", async () => {
   let usedDir;
-  await run(["localstorage", "ls"], {
+  const { code } = await run(["localstorage", "ls"], {
     ...deps(),
-    readLocalStorage: (dir) => { usedDir = dir; return []; },
+    readLocalStorage: (dir) => {
+      usedDir = dir;
+      return { entries: [], skipped: [] };
+    },
   });
+  assert.equal(code, 0, "the stub must answer in the shape the reader returns");
   assert.match(usedDir, /google-chrome\/Default\/Local Storage\/leveldb$/);
 });
 
-test("run: localstorage notes the compacted files it did not read", async () => {
+test("run: localstorage names the compacted tables it could not read", async () => {
   const { code, out } = await run(["localstorage", "du"], {
     ...deps(),
-    listDir: () => ["000005.ldb", "000017.log", "MANIFEST-000001"],
+    readLocalStorage: () => ({
+      entries: LS,
+      skipped: [
+        { name: "000012.ldb", reason: "EBUSY: resource busy or locked" },
+        { name: "000018.ldb", reason: "has a zstd-compressed block, which this reader cannot inflate" },
+      ],
+    }),
   });
   assert.equal(code, 0);
-  assert.match(out, /note: 1 \.ldb file\(s\) here hold compacted data that is not read/);
+  assert.match(
+    out,
+    /note: 2 compacted table\(s\) could not be read and are missing from these numbers: 000012\.ldb \(EBUSY: resource busy or locked\), 000018\.ldb \(has a zstd-compressed block/,
+  );
   const quiet = await run(["localstorage", "du"], deps());
-  assert.ok(!quiet.out.includes("note:"), "no note when nothing was skipped");
+  assert.ok(!quiet.out.includes("note:"), "no note when the whole store was read");
 });
 
 test("run: localstorage --json stays machine-readable", async () => {
   const { out } = await run(["localstorage", "du", "--json"], {
     ...deps(),
-    listDir: () => ["000005.ldb"],
+    readLocalStorage: () => ({ entries: LS, skipped: [{ name: "000012.ldb", reason: "locked" }] }),
   });
   assert.ok(!out.includes("note:"), "json output must not carry the coverage note");
   assert.doesNotThrow(() => JSON.parse(out));
