@@ -167,6 +167,18 @@ test("run: firefox cookies reads the store", async () => {
   assert.ok(!out.includes("TOPSECRET"), "values must not reach the report");
 });
 
+test("run: a missing store is named as missing, not as locked", async () => {
+  // Firefox profiles are named by Firefox itself, so a wrong --profile guess is the
+  // common case. Telling that user to close their browser sends them in circles.
+  const { code, out } = await run(["cookies", "ls", "--browser", "firefox", "--profile", "nope.default"], {
+    ...deps(() => { throw new Error("unable to open database file"); }),
+    exists: () => false,
+  });
+  assert.equal(code, 1);
+  assert.match(out, /no cookie store at/i);
+  assert.ok(!/close it and retry/i.test(out), `must not blame a running browser:\n${out}`);
+});
+
 test("run: firefox prune exits 2 without deleting", async () => {
   const { code, out } = await run(["cookies", "prune", "--force", "--browser", "firefox", "--profile", "x.default"], {
     ...deps(),

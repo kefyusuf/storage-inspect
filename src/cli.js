@@ -125,6 +125,12 @@ async function runCookies(cmd, profile, deps) {
     };
   }
   const storePath = pickCookiesPath(profile, deps);
+  if (!deps.exists(storePath)) {
+    return {
+      code: 1,
+      out: `storage-inspect: no cookie store at ${storePath} — wrong browser or profile? (firefox profiles look like abc123.default-release)`,
+    };
+  }
   let cookies;
   try {
     cookies = await deps.readCookies(storePath);
