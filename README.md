@@ -87,8 +87,9 @@ Tests never read real browser data: the SQLite integration tests use real `node:
 - **localStorage deletion**: reading is best-effort and partial (see above); no deletion is performed.
 - **Firefox**: Gecko stores cookies in a `moz_cookies` table and keeps localStorage in a different backend, so neither `cookies` nor `localstorage` reads a Firefox profile — the profile path resolves, the command exits with "not supported yet".
 
-## If `du` returns `EBUSY` while the browser is open
-`storage-inspect` first tries to open the store directly read-only, then falls back to copying it; if both fail, the error says "close the browser and retry". You may also need to kill Chrome's background processes:
+## If `cookies` returns `EBUSY` while the browser is open
+On Windows a running Chromium browser locks its `Cookies` file against sharing, so both attempts fail: the read-only open reports `unable to open database file` and the copy fallback reports `EBUSY: resource busy or locked`. The copy still helps on systems where the file is copyable but SQLite refuses the open, not here — closing the browser is the only reliable fix. Background processes keep the lock too, so all of them must go:
 ```
 taskkill /IM chrome.exe /F          # Windows
 ```
+`localstorage` is not affected: Chromium shares its LevelDB write-ahead log, so `localstorage ls` and `du` read a live profile.

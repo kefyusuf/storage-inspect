@@ -122,6 +122,9 @@ test("unreadable source yields a browser-lock hint", () => {
   const bogus = join(dir, "Cookies");
   writeFileSync(bogus, "not a sqlite database");
   assert.throws(() => readCookieDb(bogus), /cannot open cookie store/i);
+  // The only reliable fix is closing the browser: on Windows the lock also
+  // defeats a copy, so the hint must not offer one.
+  assert.throws(() => readCookieDb(bogus), /close it and retry/i);
 });
 
 test("deleteCookies removes only domain-matching rows and reports them", () => {

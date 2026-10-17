@@ -58,7 +58,7 @@ export function readCookieDb(sourcePath) {
   } catch {
     throw new Error(
       `cannot open cookie store at ${sourcePath}: ${primaryErr.message}. ` +
-        `If the browser is running, close it (or copy the profile directory) and retry.`,
+        `If the browser is running it locks this file against both reading and copying — close it and retry.`,
     );
   }
 }
