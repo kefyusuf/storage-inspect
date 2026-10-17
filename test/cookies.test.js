@@ -31,10 +31,13 @@ function makeCookieDb(rows) {
 }
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
-// The real moz_cookies shape, copied from Firefox's own CREATE TABLE for schema
-// version 17 (netwerk/cookie/CookiePersistentStorage.cpp). A Firefox store has no
-// encrypted_value: the value column is plaintext TEXT, which makes the length-only
-// read here the whole privacy story.
+// The schema-17 moz_cookies shape. Upstream does not have one verbatim CREATE
+// TABLE for it — CookiePersistentStorage.cpp builds it from a base table plus
+// per-version migrations — so this DDL is written out from what a real Firefox
+// store reports: its column names and order match PRAGMA table_info of a live
+// Firefox 158 profile exactly. A Firefox store has no encrypted_value: the value
+// column is plaintext TEXT, which makes the length-only read the whole privacy
+// story there.
 function makeFirefoxDb(rows) {
   const dir = mkdtempSync(join(tmpdir(), "si-fx-"));
   dirs.push(dir);
