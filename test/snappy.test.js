@@ -81,6 +81,28 @@ test("a truncated literal is refused instead of inventing bytes", () => {
   assert.throws(() => snappyUncompress(input), /truncat|length/i);
 });
 
+test("a copy that would pass the promised length is refused", () => {
+  // A two-byte literal then four copies of four bytes each: the fourth would
+  // write byte 18 of a stream that promised 16.
+  const input = bytes(0x10, 0x04, 0x61, 0x62, 0x01, 0x02, 0x01, 0x02, 0x01, 0x02, 0x01, 0x02);
+  assert.throws(() => snappyUncompress(input), /does not fit/);
+});
+
+test("a stream with no preamble at all is refused", () => {
+  assert.throws(() => snappyUncompress(Buffer.alloc(0)), /preamble/);
+});
+
+test("a preamble varint longer than five bytes is refused", () => {
+  // Five bytes are the most any value under 2^32 can need, so a sixth
+  // continuation bit means the length itself is corrupt.
+  assert.throws(() => snappyUncompress(bytes(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01)), /five bytes/);
+});
+
+test("a preamble that promises more than the reader will allocate is refused", () => {
+  // 2^32-1: a legal snappy length, and far past the cap on one block.
+  assert.throws(() => snappyUncompress(bytes(0xff, 0xff, 0xff, 0xff, 0x0f)), /impossible uncompressed length/);
+});
+
 test("a 1-byte-offset copy carries the full 11-bit offset", () => {
   // 2047 is the largest offset this form can name: the upper three bits sit in
   // the tag (0b111) and the low byte follows it. Dropping the high bits would

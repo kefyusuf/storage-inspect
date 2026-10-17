@@ -80,7 +80,7 @@ export function snappyUncompress(buf) {
     room(size, "copy");
     // A copy may overlap the bytes it is producing (that is how run-length runs
     // are encoded), so it must be byte by byte, never a bulk copy.
-    let src = written - offset;
+    const src = written - offset;
     for (let i = 0; i < size; i++) out[written + i] = out[src + i];
     written += size;
   }
