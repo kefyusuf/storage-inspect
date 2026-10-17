@@ -12,6 +12,8 @@ See which sites are hoarding how many cookies, and find the domains you want to 
 ## Install
 Node 22.18.0+ is enough (`node:sqlite` is built in). No `npm install` needed.
 That floor is load-bearing: older Node ignores the `readOnly` option that `node:sqlite` uses, so reading a running browser's cookie store would open it for writing instead.
+`engines` alone would not enforce it — npm only prints an `EBADENGINE` warning and installs anyway — so `src/main.js` checks the running version first and exits with 2 and a one-line reason. `--help` and the `localstorage` commands reach that same gate without ever importing `node:sqlite`.
+One hole the single floor cannot describe: on Node 23.0.0–23.3.x `node:sqlite` is still behind `--experimental-sqlite`, so a `cookies` command there fails loudly with `storage-inspect: No such built-in module: node:sqlite` (a `localstorage` command still works).
 ```
 cd storage-inspect
 npm link         # optional: then `storage-inspect ...` works from anywhere
@@ -56,7 +58,9 @@ src/cookies.js       readCookieDb, deleteCookies      — readOnly SQLite open �
 src/localStorage.js  readLocalStorage, filterLocalStorage, groupStorage — LevelDB WAL (.log): block record reassembly, LEB128 varint, WriteBatch parse (tag byte first, then key and value varstrings, `kTypeDeletion` tombstones honoured), `storage_key\x00` + Blink's one-byte `StorageFormat` (UTF-16LE / Latin-1) before name and value, last-write-wins, `META:`/`METAACCESS:` rows skipped; a record whose lengths do not describe it exactly is dropped rather than guessed at; a value is measured, never decoded
 src/filter.js        filterCookies, groupByDomain, totalSize, cookieSize — pure; shared by CLI and extension
 src/report.js        formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes, safeCookie — pure formatting; every output is projected through a field allowlist, so values cannot leak
-src/cli.js           parseCommand, run(argv, deps)    — deps injectable (tests run with fake readCookies/readLocalStorage)
+src/version.js       nodeVersionProblem(version)      — pure floor check, one human-readable reason
+src/cli.js           parseCommand, run(argv, deps)    — deps injectable (tests run with fake readCookies/readLocalStorage); the cookie store is imported lazily so `node:sqlite` is loaded only when one is opened
+src/main.js          bin entry                        — runs the version gate, then the CLI
 ```
 
 ## Browser extension (Manifest V3)
@@ -76,9 +80,9 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl, r
 
 ## Test
 ```
-npm test          # 139 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model/messages/bundle + package.json/README consistency
+npm test          # 149 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model/messages/bundle + entry point/version gate + package.json/README consistency
 ```
-Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`, and the extension worker is driven through its `onMessage` listener with a `chrome.cookies` stub. What is left untested is the rendering itself — the popup's DOM (`popup.js`/`popup.html`) and the generated `extension/lib` mirrors are checked as a file graph, not clicked, so a manual pass in a real browser is still owed.
+Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`, the entry test runs `src/main.js` in a child process with `node:sqlite` hidden by a loader hook and `process.versions.node` set to an old number, and the extension worker is driven through its `onMessage` listener with a `chrome.cookies` stub. What is left untested is the rendering itself — the popup's DOM (`popup.js`/`popup.html`) and the generated `extension/lib` mirrors are checked as a file graph, not clicked, so a manual pass in a real browser is still owed.
 
 ## Out of scope
 - **Decrypting values**: Chrome's `encrypted_value` field needs the OS keychain/DPAPI; this tool is deliberately **read-and-size** only — values are never decrypted or printed.
