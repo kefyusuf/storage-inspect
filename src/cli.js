@@ -17,7 +17,7 @@ const HELP = `storage-inspect — inspect browser cookies / localStorage from th
   storage-inspect localstorage du [filters]             (totals per origin)
 
 Filters / options:
-  --browser <chrome|edge|brave|firefox>   default: chrome; firefox stores are not readable yet
+  --browser <chrome|edge|brave|firefox>   default: chrome; firefox: cookies ls/du read, prune and localStorage do not
   --profile <name>                        default: Default (firefox: required)
   --domain <host>                         match entries applying to this host
   --name-regex <pattern>                  filter cookie names (cookies only)
@@ -115,10 +115,13 @@ export async function run(argv, injected = {}) {
 }
 
 async function runCookies(cmd, profile, deps) {
-  if (profile.family === "firefox") {
+  // Reading a Gecko store works (the reader picks the table from the file); the
+  // write path has not been proven against a real profile yet, so prune refuses
+  // rather than half-working.
+  if (profile.family === "firefox" && cmd.sub === "prune") {
     return {
       code: 2,
-      out: "storage-inspect: Firefox cookie stores are not supported yet — the reader only speaks the Chromium cookies schema.",
+      out: "storage-inspect: pruning a Firefox cookie store is not supported yet — ls and du read it fine.",
     };
   }
   const storePath = pickCookiesPath(profile, deps);

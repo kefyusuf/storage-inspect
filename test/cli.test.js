@@ -153,18 +153,18 @@ test("run: browser flag changes resolved path", async () => {
   assert.match(usedPath, /microsoft-edge\/Default\/Network\/Cookies$/);
 });
 
-// The reader only speaks the Chromium `cookies` table; pointing it at Gecko's
-// moz_cookies produced a confusing "cannot open cookie store" failure.
-test("run: firefox cookies exits 2 without reading the store", async () => {
-  let called = false;
-  const { code, out } = await run(["cookies", "du", "--browser", "firefox", "--profile", "x.default"], {
-    ...deps(() => { called = true; return []; }),
-    deleteCookies: () => { called = true; return { deleted: 0, removed: [] }; },
-  });
-  assert.equal(code, 2);
-  assert.match(out, /firefox/i);
-  assert.match(out, /not supported/i);
-  assert.equal(called, false, "the Chromium reader must not be pointed at a Firefox store");
+// Reading a Gecko store is supported (the reader picks the table from the file);
+// deleting one is not yet, so prune must still refuse instead of half-working.
+test("run: firefox cookies reads the store", async () => {
+  let usedPath;
+  const { code, out } = await run(
+    ["cookies", "du", "--browser", "firefox", "--profile", "x.default"],
+    { ...deps((p) => { usedPath = p; return SAMPLE; }) },
+  );
+  assert.equal(code, 0, out);
+  assert.match(usedPath, /firefox\/x\.default\/cookies\.sqlite$/);
+  assert.match(out, /ads\.net/);
+  assert.ok(!out.includes("TOPSECRET"), "values must not reach the report");
 });
 
 test("run: firefox prune exits 2 without deleting", async () => {
