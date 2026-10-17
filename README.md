@@ -80,7 +80,7 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl, r
 
 ## Test
 ```
-npm test          # 153 tests — unit + real node:sqlite integration (Chromium and Gecko schemas) + localStorage WAL + end-to-end CLI + extension model/messages/bundle + entry point/version gate + package.json/README consistency
+npm test          # 155 tests — unit + real node:sqlite integration (Chromium and Gecko schemas) + localStorage WAL + end-to-end CLI + extension model/messages/bundle + entry point/version gate + package.json/README consistency
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`, the entry test runs `src/main.js` in a child process with `node:sqlite` hidden by a loader hook and `process.versions.node` set to an old number, and the extension worker is driven through its `onMessage` listener with a `chrome.cookies` stub. What is left untested is the rendering itself — the popup's DOM (`popup.js`/`popup.html`) and the generated `extension/lib` mirrors are checked as a file graph, not clicked, so a manual pass in a real browser is still owed.
 
