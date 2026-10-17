@@ -71,12 +71,12 @@ Load it via `chrome://extensions` → Developer mode → "Load unpacked" → sel
 extension/manifest.json       MV3 — permissions: cookies, host_permissions: <all_urls>
 extension/background.js       service worker (module) — ls / remove / removeDomain messages
 extension/popup.{html,js,css} inputs + per-host groups + delete buttons
-extension/lib/model.js        toInternal (strips value), summarize, removeUrl — pure, tested core
+extension/lib/model.js        toInternal (strips value), summarize, removeUrl, removeParams — pure, tested core
 ```
 
 ## Test
 ```
-npm test          # 118 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
+npm test          # 121 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 
