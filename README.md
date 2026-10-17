@@ -46,14 +46,14 @@ storage-inspect cookies prune --domain ads.net --force
 storage-inspect localstorage du --domain example.com
 ```
 
-Security note: no output (ls/du/prune/localStorage) ever includes a **`value` or `encrypted_value`**; only host/origin, name/key, path, size (bytes) and the secure/httponly/encrypted flags are printed. `prune --force` is irreversible, so the default is a dry-run and writing requires `--force`.
+Security note: no output (ls/du/prune/localStorage) ever includes a **`value` or `encrypted_value`**; only host/origin, name/key, path, size (bytes) and the secure/httponly/encrypted flags are printed. A localStorage value is not even read into memory: the LevelDB reader checks its format byte and measures its length, never its text. `prune --force` is irreversible, so the default is a dry-run and writing requires `--force`.
 
 ## Architecture
 The pure-logic modules expose a single interface; the CLI and the browser extension share the same modules:
 ```
 src/profile.js       resolveProfile(...)              — modern Chrome path (<profile>/Network/Cookies) + legacyCookiesPath fallback + localStoragePath (Local Storage/leveldb)
 src/cookies.js       readCookieDb, deleteCookies      — readOnly SQLite open → copy → "browser running hint"; SQL returns name/path plus `length()` of value & encrypted_value, never their contents; deleteCookies write-open + rowid DELETE
-src/localStorage.js  readLocalStorage, filterLocalStorage, groupStorage — LevelDB WAL (.log): block record reassembly, LEB128 varint, WriteBatch parse (tag byte first, then key and value varstrings, `kTypeDeletion` tombstones honoured), `storage_key\x00` + Blink's one-byte `StorageFormat` (UTF-16LE / Latin-1) before name and value, last-write-wins, `META:`/`METAACCESS:` rows skipped; a record whose lengths do not describe it exactly is dropped rather than guessed at
+src/localStorage.js  readLocalStorage, filterLocalStorage, groupStorage — LevelDB WAL (.log): block record reassembly, LEB128 varint, WriteBatch parse (tag byte first, then key and value varstrings, `kTypeDeletion` tombstones honoured), `storage_key\x00` + Blink's one-byte `StorageFormat` (UTF-16LE / Latin-1) before name and value, last-write-wins, `META:`/`METAACCESS:` rows skipped; a record whose lengths do not describe it exactly is dropped rather than guessed at; a value is measured, never decoded
 src/filter.js        filterCookies, groupByDomain, totalSize, cookieSize — pure; shared by CLI and extension
 src/report.js        formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes, safeCookie — pure formatting; every output is projected through a field allowlist, so values cannot leak
 src/cli.js           parseCommand, run(argv, deps)    — deps injectable (tests run with fake readCookies/readLocalStorage)
@@ -76,7 +76,7 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl, r
 
 ## Test
 ```
-npm test          # 123 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
+npm test          # 126 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 

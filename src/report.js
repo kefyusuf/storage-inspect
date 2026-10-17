@@ -37,7 +37,8 @@ export function formatDu(groups, { json = false } = {}) {
   return rows.join("\n");
 }
 
-// localStorage values are never printed — only origin, key name and size.
+// Only origin, key name and size are printed. The reader no longer decodes values
+// at all, but `readLocalStorage` is injectable, so this projection stays the guard.
 export function formatStorage(entries, { json = false } = {}) {
   const safe = entries.map(({ origin, key, size }) => ({ origin, key, size }));
   if (json) return JSON.stringify(safe, null, 2);
