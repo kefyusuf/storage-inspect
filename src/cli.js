@@ -1,10 +1,7 @@
-#!/usr/bin/env node
-import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveProfile } from "./profile.js";
-import { readCookieDb, deleteCookies } from "./cookies.js";
 import { filterCookies, groupByDomain, totalSize } from "./filter.js";
 import { readLocalStorage, filterLocalStorage, groupStorage } from "./localStorage.js";
 import { formatCookies, formatDu, formatStorage, formatStorageDu, humanBytes, safeCookie } from "./report.js";
@@ -71,8 +68,10 @@ function defaultDeps() {
     os: process.platform,
     home: homedir(),
     exists: existsSync,
-    readCookies: readCookieDb,
-    deleteCookies,
+    // node:sqlite is imported only when a cookie store is actually opened, so
+    // --help and the localStorage commands still run on a runtime without it.
+    readCookies: async (storePath) => (await import("./cookies.js")).readCookieDb(storePath),
+    deleteCookies: async (storePath, filters) => (await import("./cookies.js")).deleteCookies(storePath, filters),
     listDir: (dir) => readdirSync(dir),
     readLocalStorage: (dir) =>
       readLocalStorage({
@@ -115,7 +114,7 @@ export async function run(argv, injected = {}) {
     : runLocalStorage(cmd, profile, deps);
 }
 
-function runCookies(cmd, profile, deps) {
+async function runCookies(cmd, profile, deps) {
   if (profile.family === "firefox") {
     return {
       code: 2,
@@ -125,7 +124,7 @@ function runCookies(cmd, profile, deps) {
   const storePath = pickCookiesPath(profile, deps);
   let cookies;
   try {
-    cookies = deps.readCookies(storePath);
+    cookies = await deps.readCookies(storePath);
   } catch (err) {
     return { code: 1, out: `storage-inspect: ${err.message}` };
   }
@@ -152,7 +151,7 @@ function runCookies(cmd, profile, deps) {
 
   let result;
   try {
-    result = deps.deleteCookies(storePath, { domain: cmd.opts.domain, nameRegex: cmd.opts.nameRegex });
+    result = await deps.deleteCookies(storePath, { domain: cmd.opts.domain, nameRegex: cmd.opts.nameRegex });
   } catch (err) {
     return { code: 1, out: `storage-inspect: ${err.message} (no cookies were deleted)` };
   }
@@ -186,10 +185,4 @@ function runLocalStorage(cmd, profile, deps) {
     ? `\n\nnote: ${unread} .ldb file(s) here hold compacted data that is not read — this is the write-ahead log tail only.`
     : "";
   return { code: 0, out: out + note };
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { code, out } = await run(process.argv.slice(2));
-  console.log(out);
-  process.exit(code);
 }
