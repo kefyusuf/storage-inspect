@@ -179,10 +179,6 @@ export function readLocalStorage({ listFiles, readFile }) {
     for (const write of tableWrites) writes.push(write);
   }
 
-  // leveldb numbers every write once, so the only way two rows share a sequence is
-  // the same write sitting in a table and in the log at once — then it is also the
-  // same key and the tie changes nothing. The sort is stable, so the result does not
-  // depend on which run you look at.
   writes.sort((a, b) => a.seq - b.seq);
 
   const byEntry = new Map();

@@ -319,12 +319,12 @@ test("readLocalStorage honours delete records", () => {
   assert.deepEqual(store(files).entries, []);
 });
 
-test("readLocalStorage merges and last-write-wins across multiple logs", () => {
+test("readLocalStorage lets the newer sequence win across multiple logs", () => {
   const key = mapKey("https://a.com", "k");
   const files = {
-    "000003.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("old") }]))),
-    // longer on purpose: the size is what shows the second log won, since no text survives
-    "000007.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("newer") }]))),
+    "000003.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("old") }], 1))),
+    // longer on purpose: the size is what shows the newer batch won, since no text survives
+    "000007.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("newer") }], 2))),
   };
   assert.deepEqual(store(files).entries, [{ origin: "https://a.com", key: "k", size: 1 + 10 }]);
 });
