@@ -76,9 +76,9 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl, r
 
 ## Test
 ```
-npm test          # 126 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
+npm test          # 139 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model/messages/bundle + package.json/README consistency
 ```
-Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
+Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`, and the extension worker is driven through its `onMessage` listener with a `chrome.cookies` stub. What is left untested is the rendering itself — the popup's DOM (`popup.js`/`popup.html`) and the generated `extension/lib` mirrors are checked as a file graph, not clicked, so a manual pass in a real browser is still owed.
 
 ## Out of scope
 - **Decrypting values**: Chrome's `encrypted_value` field needs the OS keychain/DPAPI; this tool is deliberately **read-and-size** only — values are never decrypted or printed.
