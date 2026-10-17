@@ -225,17 +225,66 @@ test("decodeEntry returns null for metadata rows", () => {
   assert.equal(decodeEntry(Buffer.from("METAACCESS:https://a.com"), mapValue("{}")), null);
 });
 
+// ---- test-side encoders for a leveldb table (SSTable), mirroring table/format.cc
+// Only what the merge needs: one uncompressed data block, an empty meta index
+// (a table with no filter) and an index that points at that block.
+const TABLE_MAGIC = 0xdb4775248b80fb57n;
+const fixed32 = (n) => Buffer.from([n & 255, (n >> 8) & 255, (n >> 16) & 255, n >>> 24]);
+
+// The eight bytes behind a user key are (sequence << 8) | type, where 0 is a
+// deletion and 1 is a value (db/format.h).
+function internalKey(user, seq, type) {
+  const buf = Buffer.alloc(user.length + 8);
+  user.copy(buf);
+  buf.writeBigUInt64LE((BigInt(seq) << 8n) | BigInt(type), user.length);
+  return buf;
+}
+
+// Every entry here starts its own restart point (shared = 0), which is legal and
+// the simplest thing a fixture can do.
+function blockOf(entries) {
+  let at = 0;
+  const parts = [];
+  const restarts = [];
+  for (const { key, value } of entries) {
+    restarts.push(at);
+    const part = Buffer.concat([varint(0), varint(key.length), varint(value.length), key, value]);
+    parts.push(part);
+    at += part.length;
+  }
+  return Buffer.concat([...parts, ...restarts.map(fixed32), fixed32(restarts.length)]);
+}
+
+// A block on disk: contents, one compression-type byte, then the four crc bytes.
+const blockFile = (block) => Buffer.concat([block, Buffer.from([0]), fixed32(0)]);
+
+function ldb(entries) {
+  const data = blockOf(entries);
+  const meta = Buffer.concat([fixed32(0), fixed32(1)]); // empty block: one restart at 0
+  const index = blockOf([
+    { key: Buffer.from("z"), value: Buffer.concat([varint(0), varint(data.length)]) },
+  ]);
+  const footer = Buffer.concat([
+    varint(data.length + 5), varint(meta.length),
+    varint(data.length + meta.length + 10), varint(index.length),
+  ]);
+  const magic = Buffer.alloc(8);
+  magic.writeBigUInt64LE(TABLE_MAGIC);
+  return Buffer.concat([blockFile(data), blockFile(meta), blockFile(index), footer, Buffer.alloc(40 - footer.length), magic]);
+}
+
+const logOf = (writes, seq) => padToBlock(record(1, buildWriteBatch(writes, seq)));
+
+// The reader answers with the entries it merged and the tables it could not read;
+// tests about data ask for `.entries`, tests about coverage ask for `.skipped`.
+const store = (files) => readLocalStorage({ listFiles: () => Object.keys(files), readFile: (name) => files[name] });
+
 test("readLocalStorage decodes Full-record entries from a .log file", () => {
   const batch = buildWriteBatch([
     { key: mapKey("https://a.com", "color"), value: mapValue("red") },
     { key: mapKey("https://b.com", "theme"), value: mapValue("dark") },
   ]);
-  const log = padToBlock(record(1, batch));
-  const files = { "000005.log": log };
-  const entries = readLocalStorage({
-    listFiles: () => Object.keys(files),
-    readFile: (name) => files[name],
-  });
+  const { entries } = store({ "000005.log": padToBlock(record(1, batch)) });
   assert.deepEqual(
     entries.map((e) => `${e.origin}|${e.key}|${e.size}`),
     ["https://a.com|color|11", "https://b.com|theme|13"],
@@ -247,7 +296,7 @@ test("readLocalStorage prints no format byte in the key (live Edge store shape)"
   const batch = buildWriteBatch([
     { key: mapKey("_chrome-extension://abcdefghijklmnopqrstuvwxyz", "base_URL"), value: mapValue("https://example.com") },
   ]);
-  const [entry] = readLocalStorage({ listFiles: () => ["000017.log"], readFile: () => padToBlock(record(1, batch)) });
+  const [entry] = store({ "000017.log": padToBlock(record(1, batch)) }).entries;
   assert.equal(entry.key, "base_URL");
   assert.ok(!/[\u0000-\u001f]/.test(`${entry.origin}${entry.key}`), "no control byte may reach the output");
 });
@@ -258,7 +307,7 @@ test("readLocalStorage skips metadata rows", () => {
     { key: Buffer.from("METAACCESS:https://a.com"), value: mapValue("{}") },
     { key: mapKey("https://a.com", "k"), value: mapValue("v") },
   ]);
-  const entries = readLocalStorage({ listFiles: () => ["x.log"], readFile: () => padToBlock(record(1, batch)) });
+  const entries = store({ "x.log": padToBlock(record(1, batch)) }).entries;
   assert.deepEqual(entries.map((e) => e.key), ["k"]);
 });
 
@@ -267,7 +316,7 @@ test("readLocalStorage honours delete records", () => {
   const files = {
     "000003.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("gone") }, { key, op: "delete" }]))),
   };
-  assert.deepEqual(readLocalStorage({ listFiles: () => Object.keys(files), readFile: (n) => files[n] }), []);
+  assert.deepEqual(store(files).entries, []);
 });
 
 test("readLocalStorage merges and last-write-wins across multiple logs", () => {
@@ -277,21 +326,145 @@ test("readLocalStorage merges and last-write-wins across multiple logs", () => {
     // longer on purpose: the size is what shows the second log won, since no text survives
     "000007.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("newer") }]))),
   };
-  const entries = readLocalStorage({ listFiles: () => Object.keys(files), readFile: (n) => files[n] });
-  assert.deepEqual(entries, [{ origin: "https://a.com", key: "k", size: 1 + 10 }]);
+  assert.deepEqual(store(files).entries, [{ origin: "https://a.com", key: "k", size: 1 + 10 }]);
 });
 
 test("readLocalStorage computes size from key + value bytes, format tags excluded", () => {
   const batch = buildWriteBatch([{ key: mapKey("https://a.com", "k"), value: mapValue("v") }]);
-  const [out] = readLocalStorage({ listFiles: () => ["a.log"], readFile: () => padToBlock(record(1, batch)) });
+  const [out] = store({ "a.log": padToBlock(record(1, batch)) }).entries;
   assert.equal(out.size, 1 + 2); // Latin-1 "k" (1 B) + UTF-16 "v" (2 B); the two tag bytes are not data
 });
 
 test("readLocalStorage drops a row whose format byte is unknown", () => {
   const key = Buffer.concat([Buffer.from("https://a.com"), Buffer.from([0x00, 0x7f]), Buffer.from("k")]);
   const batch = buildWriteBatch([{ key, value: mapValue("v") }, { key: mapKey("https://a.com", "kept"), value: mapValue("v") }]);
-  const entries = readLocalStorage({ listFiles: () => ["a.log"], readFile: () => padToBlock(record(1, batch)) });
+  const entries = store({ "a.log": padToBlock(record(1, batch)) }).entries;
   assert.deepEqual(entries.map((e) => e.key), ["kept"]);
+});
+
+test("readLocalStorage reads a store that holds only tables", () => {
+  const { entries, skipped } = store({
+    "000012.ldb": ldb([
+      { key: internalKey(mapKey("https://a.com", "k"), 6, 1), value: mapValue("v") },
+    ]),
+  });
+  assert.deepEqual(entries, [{ origin: "https://a.com", key: "k", size: 1 + 2 }]);
+  assert.deepEqual(skipped, []);
+});
+
+// Compaction rewrites most of the store into tables, so a Chromium profile's live
+// data is split across *.ldb and the *.log tail. LevelDB resolves a key by its
+// sequence number (db/db_impl.cc DoCompactionWork), and that has to be what the
+// merge orders by — file names and file order mean nothing here.
+test("readLocalStorage lets the higher sequence win across a table and the log", () => {
+  const key = mapKey("https://a.com", "color");
+  // the table comes first in file order and holds the newer write: only ordering
+  // by sequence can make it win
+  const { entries } = store({
+    "000012.ldb": ldb([{ key: internalKey(key, 40, 1), value: mapValue("from the table") }]),
+    "000017.log": logOf([{ key, value: mapValue("old") }], 5),
+  });
+  assert.deepEqual(entries, [{ origin: "https://a.com", key: "color", size: 5 + 28 }]);
+});
+
+test("readLocalStorage lets a newer WAL write win over a table", () => {
+  const key = mapKey("https://a.com", "color");
+  const { entries } = store({
+    "000012.ldb": ldb([{ key: internalKey(key, 10, 1), value: mapValue("stale") }]),
+    "000017.log": logOf([{ key, value: mapValue("newer") }], 20),
+  });
+  assert.deepEqual(entries, [{ origin: "https://a.com", key: "color", size: 5 + 10 }]);
+});
+
+test("a table tombstone hides an older WAL write", () => {
+  const key = mapKey("https://a.com", "color");
+  const { entries } = store({
+    "000012.ldb": ldb([{ key: internalKey(key, 40, 0), value: Buffer.alloc(0) }]),
+    "000017.log": logOf([{ key, value: mapValue("written before the compaction") }], 30),
+  });
+  assert.deepEqual(entries, []);
+});
+
+test("a WAL delete hides an older table write", () => {
+  const key = mapKey("https://a.com", "color");
+  const { entries } = store({
+    "000012.ldb": ldb([{ key: internalKey(key, 10, 1), value: mapValue("v") }]),
+    "000017.log": logOf([{ key, op: "delete" }], 50),
+  });
+  assert.deepEqual(entries, []);
+});
+
+test("readLocalStorage drops the metadata rows a table carries", () => {
+  // measured in a real profile: every table holds META: / METAACCESS: / VERSION
+  // rows next to the item rows, and none of them is user data
+  const { entries } = store({
+    "000012.ldb": ldb([
+      { key: internalKey(Buffer.from("META:https://a.com"), 1, 1), value: mapValue("{}") },
+      { key: internalKey(Buffer.from("METAACCESS:https://a.com"), 2, 1), value: mapValue("{}") },
+      { key: internalKey(Buffer.from("VERSION"), 3, 1), value: mapValue("{}") },
+      { key: internalKey(mapKey("https://a.com", "k"), 4, 1), value: mapValue("v") },
+    ]),
+  });
+  assert.deepEqual(entries.map((e) => e.key), ["k"]);
+});
+
+// A table is one compaction's worth of history. Losing one makes the totals small,
+// so it has to be reported — but it must not take the readable rest of the store
+// with it, which is what a locked or half-written table would otherwise do.
+test("readLocalStorage reports a table it cannot parse instead of failing", () => {
+  const { entries, skipped } = store({
+    "000012.ldb": Buffer.from("this is not a table"),
+    "000017.log": logOf([{ key: mapKey("https://a.com", "k"), value: mapValue("v") }], 1),
+  });
+  assert.deepEqual(entries.map((e) => e.key), ["k"]);
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0].name, "000012.ldb");
+  assert.match(skipped[0].reason, /not an sstable/);
+});
+
+test("readLocalStorage reports a table the browser will not let it open", () => {
+  const files = { "000017.log": logOf([{ key: mapKey("https://a.com", "k"), value: mapValue("v") }], 1) };
+  const { entries, skipped } = readLocalStorage({
+    listFiles: () => ["000012.ldb", "000017.log"],
+    readFile: (name) => {
+      if (name.endsWith(".ldb")) throw new Error("EBUSY: resource busy or locked");
+      return files[name];
+    },
+  });
+  assert.deepEqual(entries.map((e) => e.key), ["k"]);
+  assert.deepEqual(skipped.map((s) => s.name), ["000012.ldb"]);
+  assert.match(skipped[0].reason, /locked/);
+});
+
+test("readLocalStorage refuses to order a table whose entry type it does not know", () => {
+  const key = mapKey("https://a.com", "k");
+  const { entries, skipped } = store({
+    "000012.ldb": ldb([
+      // a row this reader could use, sitting before the one it cannot: a table
+      // whose history cannot be ordered contributes nothing at all, because the
+      // unknown row might have been the newest write for any key in it
+      { key: internalKey(mapKey("https://a.com", "kept"), 9, 1), value: mapValue("v") },
+      { key: internalKey(key, 10, 4), value: mapValue("v") },
+    ]),
+    "000017.log": logOf([{ key, value: mapValue("from the log") }], 5),
+  });
+  assert.deepEqual(entries.map((e) => e.key), ["k"]);
+  assert.match(skipped[0].reason, /type 4/);
+});
+
+test("a log the reader cannot open still fails the command", () => {
+  // the WAL tail is where the writes the browser has not compacted live; a store
+  // whose log cannot be opened is not a partial result, it is an unreadable store
+  assert.throws(
+    () =>
+      readLocalStorage({
+        listFiles: () => ["000017.log"],
+        readFile: () => {
+          throw new Error("EBUSY: resource busy or locked");
+        },
+      }),
+    /locked/,
+  );
 });
 
 const LS = [

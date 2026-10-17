@@ -1,3 +1,5 @@
+import { readSstEntries } from "./sstable.js";
+
 const BLOCK = 32768;
 const TYPE_FULL = 1;
 const TYPE_FIRST = 2;
@@ -7,6 +9,8 @@ const OP_DELETE = 0;
 const OP_PUT = 1;
 const FORMAT_UTF16 = 0;
 const FORMAT_LATIN1 = 1;
+const SST_DELETE = 0;
+const SST_VALUE = 1;
 const MAX_SEQUENCE = BigInt(Number.MAX_SAFE_INTEGER);
 
 function readVarint(buf, offset) {
@@ -131,28 +135,68 @@ export function decodeEntry(keyBuf, valueBuf) {
   };
 }
 
-// Best-effort: reads the LevelDB write-ahead log (*.log) only. Entries compacted
-// into .ldb (Snappy) files are NOT covered — see README "Out of scope".
+// A Chromium profile's localStorage is one LevelDB: most of it sits compacted in
+// *.ldb tables and the recent writes in the *.log tail. Both are read, and the two
+// are merged by sequence number, which is what leveldb itself does when it serves a
+// read (db/db_impl.cc DoCompactionWork: the newest sequence for a key wins and a
+// newer deletion hides it).
+//
+// A table that cannot be read is counted in `skipped` and reported instead of
+// ending the command: one locked or half-written compaction output should not cost
+// the user everything else in the store. A log that cannot be opened is a different
+// matter — it holds the writes that exist nowhere else, so the error propagates.
 export function readLocalStorage({ listFiles, readFile }) {
-  const logs = listFiles().filter((f) => f.endsWith(".log")).sort();
-  const byEntry = new Map();
+  const files = listFiles().filter((f) => f.endsWith(".log") || f.endsWith(".ldb")).sort();
+  const writes = [];
+  const skipped = [];
 
-  for (const name of logs) {
-    const buf = readFile(name);
-    for (const record of readRecords(buf)) {
-      for (const { op, key, value } of parseWriteBatch(record)) {
-        const entry = decodeEntry(key, value);
-        if (!entry) continue;
-        const id = `${entry.origin}\u0000${entry.key}`;
-        if (op === "delete") {
-          byEntry.delete(id);
-          continue;
-        }
-        byEntry.set(id, entry);
+  for (const name of files) {
+    if (name.endsWith(".log")) {
+      for (const record of readRecords(readFile(name))) {
+        for (const write of parseWriteBatch(record)) writes.push(write);
       }
+      continue;
     }
+    const tableWrites = [];
+    try {
+      for (const entry of readSstEntries(name, readFile(name))) {
+        if (entry.type !== SST_DELETE && entry.type !== SST_VALUE) {
+          throw new Error(`${name} holds an entry of type ${entry.type}, which this reader cannot order`);
+        }
+        tableWrites.push({
+          seq: entry.seq,
+          op: entry.type === SST_DELETE ? "delete" : "put",
+          key: entry.userKey,
+          value: entry.type === SST_DELETE ? null : entry.value,
+        });
+      }
+    } catch (err) {
+      // an entry the reader cannot order makes the table's history untrustworthy
+      // as a whole, so none of it is merged — `skipped` says which table is missing
+      skipped.push({ name, reason: err.message });
+      continue;
+    }
+    for (const write of tableWrites) writes.push(write);
   }
-  return [...byEntry.values()];
+
+  // leveldb numbers every write once, so the only way two rows share a sequence is
+  // the same write sitting in a table and in the log at once — then it is also the
+  // same key and the tie changes nothing. The sort is stable, so the result does not
+  // depend on which run you look at.
+  writes.sort((a, b) => a.seq - b.seq);
+
+  const byEntry = new Map();
+  for (const { op, key, value } of writes) {
+    const entry = decodeEntry(key, value);
+    if (!entry) continue;
+    const id = `${entry.origin}\u0000${entry.key}`;
+    if (op === "delete") {
+      byEntry.delete(id);
+      continue;
+    }
+    byEntry.set(id, entry);
+  }
+  return { entries: [...byEntry.values()], skipped };
 }
 
 function hostOf(origin) {
