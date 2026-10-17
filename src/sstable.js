@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { snappyUncompress } from "./snappy.js";
 
 // leveldb's SSTable format, the thing a *.ldb file is. Layout as written by
@@ -11,6 +10,9 @@ import { snappyUncompress } from "./snappy.js";
 //   block contents = (shared, non_shared, value_len, key delta, value)* ,
 //                    restart offsets as uint32, restart count as uint32
 //
+// The caller supplies the bytes: this reader never opens a file, so whoever
+// decided whether to read the store in place or copy it first stays in charge.
+// `name` is only ever used to say which table failed.
 // Values are handed back as they sit in the block: a Buffer nobody decodes.
 const MAGIC = 0xdb4775248b80fb57n;
 const FOOTER_BYTES = 48;
@@ -81,27 +83,26 @@ function splitInternalKey(key) {
   };
 }
 
-export function readSstEntries(path) {
-  const file = readFileSync(path);
+export function readSstEntries(name, file) {
   if (file.length < FOOTER_BYTES) {
-    throw new Error(`not an sstable: ${path} is ${file.length} bytes, shorter than a ${FOOTER_BYTES}-byte footer`);
+    throw new Error(`not an sstable: ${name} is ${file.length} bytes, shorter than a ${FOOTER_BYTES}-byte footer`);
   }
   const footer = file.subarray(file.length - FOOTER_BYTES);
   const magic = (BigInt(footer.readUInt32LE(FOOTER_BYTES - 4)) << 32n) | BigInt(footer.readUInt32LE(FOOTER_BYTES - 8));
   if (magic !== MAGIC) {
-    throw new Error(`not an sstable: ${path} ends with magic 0x${magic.toString(16)}, not leveldb's table magic`);
+    throw new Error(`not an sstable: ${name} ends with magic 0x${magic.toString(16)}, not leveldb's table magic`);
   }
 
   const inflate = (offset, size, what) => {
     if (offset + size + TRAILER_BYTES > file.length) {
-      throw new Error(`truncated table: the ${what} block at ${offset}+${size} runs past ${file.length} bytes of ${path}`);
+      throw new Error(`truncated table: the ${what} block at ${offset}+${size} runs past the ${file.length} bytes of ${name}`);
     }
     const type = file[offset + size];
     const body = file.subarray(offset, offset + size);
     if (type === TYPE_SNAPPY) return snappyUncompress(body);
     if (type === TYPE_NONE) return body;
-    if (type === TYPE_ZSTD) throw new Error(`${path} has a zstd-compressed block, which this reader cannot inflate`);
-    throw new Error(`${path} has a block with unknown compression type ${type}`);
+    if (type === TYPE_ZSTD) throw new Error(`${name} has a zstd-compressed block, which this reader cannot inflate`);
+    throw new Error(`${name} has a block with unknown compression type ${type}`);
   };
 
   // The metaindex block holds the bloom filter, which a full scan does not need.

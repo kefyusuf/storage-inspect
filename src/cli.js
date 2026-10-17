@@ -13,7 +13,7 @@ const HELP = `storage-inspect — inspect browser cookies / localStorage from th
   storage-inspect cookies prune  [filters]              (dry-run: shows what would be deleted)
   storage-inspect cookies prune  [filters] --force      (deletes in one transaction; close the browser first)
 
-  storage-inspect localstorage ls [filters]             (chromium only; the write-ahead log tail, .ldb not read)
+  storage-inspect localstorage ls [filters]             (chromium only; compacted tables plus the log tail)
   storage-inspect localstorage du [filters]             (totals per origin)
 
 Filters / options:
@@ -72,7 +72,6 @@ function defaultDeps() {
     // --help and the localStorage commands still run on a runtime without it.
     readCookies: async (storePath) => (await import("./cookies.js")).readCookieDb(storePath),
     deleteCookies: async (storePath, filters) => (await import("./cookies.js")).deleteCookies(storePath, filters),
-    listDir: (dir) => readdirSync(dir),
     readLocalStorage: (dir) =>
       readLocalStorage({
         listFiles: () => readdirSync(dir),
@@ -180,12 +179,13 @@ function runLocalStorage(cmd, profile, deps) {
   if (!profile.localStoragePath) {
     return { code: 2, out: `storage-inspect: localStorage is not supported for ${cmd.opts.browser} (chromium only, best-effort).` };
   }
-  let entries;
+  let result;
   try {
-    entries = deps.readLocalStorage(profile.localStoragePath);
+    result = deps.readLocalStorage(profile.localStoragePath);
   } catch (err) {
     return { code: 1, out: `storage-inspect: ${err.message}` };
   }
+  const { entries, skipped } = result;
   const matched = filterLocalStorage(entries, { domain: cmd.opts.domain });
 
   const out = cmd.sub === "ls"
@@ -193,11 +193,10 @@ function runLocalStorage(cmd, profile, deps) {
     : formatStorageDu(groupStorage(matched), { json: cmd.opts.json });
   if (cmd.opts.json) return { code: 0, out };
 
-  // The WAL only holds recent writes; everything compacted away sits in .ldb
-  // files this reader does not parse, so say so instead of looking complete.
-  const unread = deps.listDir(profile.localStoragePath).filter((f) => f.endsWith(".ldb")).length;
-  const note = unread
-    ? `\n\nnote: ${unread} .ldb file(s) here hold compacted data that is not read — this is the write-ahead log tail only.`
+  // A compacted table that cannot be read makes the totals below what the origin
+  // holds, so name the file and the reason instead of looking complete.
+  const note = skipped.length
+    ? `\n\nnote: ${skipped.length} compacted table(s) could not be read and are missing from these numbers: ${skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}.`
     : "";
   return { code: 0, out: out + note };
 }

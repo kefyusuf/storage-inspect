@@ -1,14 +1,6 @@
-import { test, after } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { readSstEntries } from "../src/sstable.js";
-
-const dirs = [];
-after(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
-});
 
 // Everything below is written out byte by byte from leveldb's table format
 // (table/format.{h,cc}, table/block.cc, table/table_builder.cc), so the reader
@@ -113,14 +105,6 @@ function makeTable({ entries, rawBlocks, dataSnappy = false, dataType = dataSnap
   return Buffer.concat([...parts, footer]);
 }
 
-function writeFile(name, bytes) {
-  const dir = mkdtempSync(join(tmpdir(), "si-sst-"));
-  dirs.push(dir);
-  const path = join(dir, name);
-  writeFileSync(path, bytes);
-  return path;
-}
-
 // The eight bytes after a user key hold (sequence << 8) | type.
 const internalKey = (user, seq, type) => {
   const b = Buffer.alloc(user.length + 8);
@@ -130,7 +114,7 @@ const internalKey = (user, seq, type) => {
 };
 
 test("reads entries out of a hand-built table", () => {
-  const path = writeFile(
+  const out = readSstEntries(
     "handmade.ldb",
     makeTable({
       entries: [
@@ -139,7 +123,6 @@ test("reads entries out of a hand-built table", () => {
       ],
     }),
   );
-  const out = readSstEntries(path);
   assert.equal(out.length, 2);
   assert.deepEqual(out.map((e) => e.userKey.toString("latin1")), [
     "https://a.com\x00\x01token",
@@ -151,13 +134,10 @@ test("reads entries out of a hand-built table", () => {
 });
 
 test("the internal key splits into user key, sequence and type", () => {
-  const path = writeFile(
+  const [entry] = readSstEntries(
     "tombstone.ldb",
-    makeTable({
-      entries: [{ key: internalKey("gone", 99, 0), value: Buffer.alloc(0) }],
-    }),
+    makeTable({ entries: [{ key: internalKey("gone", 99, 0), value: Buffer.alloc(0) }] }),
   );
-  const [entry] = readSstEntries(path);
   assert.equal(entry.userKey.toString("latin1"), "gone");
   assert.equal(entry.seq, 99);
   assert.equal(entry.type, 0, "kTypeDeletion must survive, the merge needs it");
@@ -167,7 +147,7 @@ test("keys sharing a prefix are rebuilt from the restart points", () => {
   const first = internalKey("https://shared.example.com\x00\x01alpha", 1, 1);
   const second = internalKey("https://shared.example.com\x00\x01beta", 2, 1);
   const third = internalKey("https://other.example.com\x00\x01alpha", 3, 1);
-  const path = writeFile(
+  const out = readSstEntries(
     "prefix.ldb",
     makeTable({
       entries: [
@@ -185,7 +165,6 @@ test("keys sharing a prefix are rebuilt from the restart points", () => {
       ],
     }),
   );
-  const out = readSstEntries(path);
   assert.deepEqual(
     out.map((e) => e.userKey.toString("latin1")),
     [
@@ -200,7 +179,7 @@ test("keys sharing a prefix are rebuilt from the restart points", () => {
 });
 
 test("several data blocks are read in handle order", () => {
-  const path = writeFile(
+  const out = readSstEntries(
     "two-blocks.ldb",
     makeTable({
       entries: [
@@ -209,63 +188,58 @@ test("several data blocks are read in handle order", () => {
       ],
     }),
   );
-  assert.deepEqual(readSstEntries(path).map((e) => e.userKey.toString()), ["a", "b"]);
+  assert.deepEqual(out.map((e) => e.userKey.toString()), ["a", "b"]);
 });
 
 test("a Snappy data block is inflated before it is parsed", () => {
-  const path = writeFile(
+  const [entry] = readSstEntries(
     "snappy.ldb",
     makeTable({
       dataSnappy: true,
       entries: [{ key: internalKey("compact", 3, 1), value: Buffer.alloc(100, 0x7a) }],
     }),
   );
-  const [entry] = readSstEntries(path);
   assert.equal(entry.userKey.toString("latin1"), "compact");
   assert.equal(entry.value.length, 100);
 });
 
 test("a Snappy index block is inflated too", () => {
-  const path = writeFile(
+  const out = readSstEntries(
     "snappy-index.ldb",
     makeTable({
       indexSnappy: true,
       entries: [{ key: internalKey("indexed", 4, 1), value: Buffer.alloc(5) }],
     }),
   );
-  assert.equal(readSstEntries(path)[0].userKey.toString("latin1"), "indexed");
+  assert.equal(out[0].userKey.toString("latin1"), "indexed");
 });
 
-test("a file that is not an sstable says so", () => {
-  const path = writeFile(
-    "wrong.ldb",
-    makeTable({ entries: [{ key: internalKey("a", 1, 1), value: Buffer.alloc(1) }], magic: 0x00000002_00000001n }),
+test("a file that is not an sstable says so, naming the file it came from", () => {
+  const bytes = makeTable(
+    { entries: [{ key: internalKey("a", 1, 1), value: Buffer.alloc(1) }], magic: 0x00000002_00000001n },
   );
-  assert.throws(() => readSstEntries(path), /not an sstable.*magic/i);
+  assert.throws(() => readSstEntries("wrong.ldb", bytes), /not an sstable: wrong\.ldb\b.*magic/i);
 });
 
 test("a table shorter than a footer is refused", () => {
-  const path = writeFile("tiny.ldb", Buffer.alloc(20, 0x61));
-  assert.throws(() => readSstEntries(path), /short|footer/i);
+  assert.throws(() => readSstEntries("tiny.ldb", Buffer.alloc(20, 0x61)), /shorter than a 48-byte footer/);
 });
 
 test("a handle pointing past the end of the file is refused", () => {
-  // Cut the file short and the footer no longer lands on the last 48 bytes:
+  // Cut the table short and the footer no longer lands on the last 48 bytes:
   // that path is really the magic check, so instead the footer is kept whole
-  // and its index size is enlarged to claim bytes the file does not have.
+  // and its index size is enlarged to claim bytes the table does not have.
   // Every handle here is a single-byte varint, so byte 3 of the footer is it.
   const bytes = makeTable({ entries: [{ key: internalKey("a", 1, 1), value: Buffer.alloc(1) }] });
   const patched = Buffer.from(bytes);
   patched[patched.length - 48 + 3] = 0xff;
-  const path = writeFile("over-large-handle.ldb", patched);
-  assert.throws(() => readSstEntries(path), /runs past/);
+  assert.throws(() => readSstEntries("over-large-handle.ldb", patched), /runs past/);
 });
 
 test("an entry whose lengths do not describe the block is refused", () => {
   // header promises a 400-byte key delta and a 4-byte value, the block holds two
   const broken = Buffer.concat([varint(0), varint(400), varint(4), Buffer.from("ab"), fixed32(0), fixed32(1)]);
-  const path = writeFile("broken.ldb", makeTable({ rawBlocks: [broken] }));
-  assert.throws(() => readSstEntries(path), /wants 400 key bytes/);
+  assert.throws(() => readSstEntries("broken.ldb", makeTable({ rawBlocks: [broken] })), /wants 400 key bytes/);
 });
 
 test("an entry that shares more than the previous key has is refused", () => {
@@ -277,27 +251,25 @@ test("an entry that shares more than the previous key has is refused", () => {
     varint(50), varint(2), varint(1), Buffer.from("cd"), Buffer.from([0x02]),
     fixed32(0), fixed32(1),
   ]);
-  const path = writeFile("over-shared.ldb", makeTable({ rawBlocks: [broken] }));
-  assert.throws(() => readSstEntries(path), /after 50 shared/);
+  assert.throws(() => readSstEntries("over-shared.ldb", makeTable({ rawBlocks: [broken] })), /after 50 shared/);
 });
 
 test("a zstd block says which compression it cannot inflate", () => {
-  const path = writeFile(
-    "zstd.ldb",
-    makeTable({ rawBlocks: [blockOf([{ key: internalKey("a", 1, 1), value: Buffer.alloc(1) }])], dataType: 2 }),
-  );
-  assert.throws(() => readSstEntries(path), /zstd/);
+  const bytes = makeTable({
+    rawBlocks: [blockOf([{ key: internalKey("a", 1, 1), value: Buffer.alloc(1) }])],
+    dataType: 2,
+  });
+  assert.throws(() => readSstEntries("zstd.ldb", bytes), /zstd/);
 });
 
 test("a footer varint that never ends is refused", () => {
   // Every handle byte keeps its continuation bit set. A reader that kept
   // summing would run past the footer and trust a length from nowhere.
-  const path = writeFile("runaway.ldb", Buffer.concat([Buffer.alloc(40, 0xff), magicBytes()]));
-  assert.throws(() => readSstEntries(path), /bounded varint/);
+  const bytes = Buffer.concat([Buffer.alloc(40, 0xff), magicBytes()]);
+  assert.throws(() => readSstEntries("runaway.ldb", bytes), /bounded varint/);
 });
 
 test("a restart array that cannot fit in the block is refused", () => {
   const broken = Buffer.concat([Buffer.from([0x00, 0x02, 0x00]), Buffer.from("ab"), fixed32(0), fixed32(1000)]);
-  const path = writeFile("bad-restarts.ldb", makeTable({ rawBlocks: [broken] }));
-  assert.throws(() => readSstEntries(path), /restart/i);
+  assert.throws(() => readSstEntries("bad-restarts.ldb", makeTable({ rawBlocks: [broken] })), /restart/);
 });
