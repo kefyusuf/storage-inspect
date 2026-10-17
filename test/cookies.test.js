@@ -104,6 +104,18 @@ test("readCookieDb opens the source read-only and does not mutate it", () => {
   assert.equal(readCookieDb(path).length, 1);
 });
 
+test("the running Node honors the read-only open the reader relies on", () => {
+  // On a Node older than the engines floor this option is unknown, the store is
+  // opened for writing, and a live profile can grow -wal/-shm files. Fail loudly.
+  const path = makeCookieDb([{ host_key: "a.com", name: "x", value: "y", path: "/" }]);
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    assert.throws(() => db.exec(`DELETE FROM cookies WHERE host_key = 'a.com'`), /readonly|read-only/i);
+  } finally {
+    db.close();
+  }
+});
+
 test("unreadable source yields a browser-lock hint", () => {
   const dir = mkdtempSync(join(tmpdir(), "si-lock-"));
   dirs.push(dir);

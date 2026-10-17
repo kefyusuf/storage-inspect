@@ -1,7 +1,7 @@
 # storage-inspect
 
 ![CI](https://github.com/kefyusuf/storage-inspect/actions/workflows/ci.yml/badge.svg)
-![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)
+![node](https://img.shields.io/badge/node-%E2%89%A522.18.0-brightgreen)
 ![deps](https://img.shields.io/badge/dependencies-0-blue)
 
 A dependency-free Node CLI to inspect browser cookies and localStorage — plus a Manifest V3 browser extension.
@@ -10,7 +10,8 @@ A dependency-free Node CLI to inspect browser cookies and localStorage — plus 
 See which sites are hoarding how many cookies, and find the domains you want to clear — but do it without opening a browser, in a scriptable way, and without ever leaking values. Portfolio piece: JavaScript fundamentals + TDD practice (every module is a pure function with its own test).
 
 ## Install
-Node 22+ is enough (`node:sqlite` is built in). No `npm install` needed.
+Node 22.18.0+ is enough (`node:sqlite` is built in). No `npm install` needed.
+That floor is load-bearing: older Node ignores the `readOnly` option that `node:sqlite` uses, so reading a running browser's cookie store would open it for writing instead.
 ```
 cd storage-inspect
 npm link         # optional: then `storage-inspect ...` works from anywhere
@@ -75,7 +76,7 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl �
 
 ## Test
 ```
-npm test          # 113 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model
+npm test          # 116 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 
