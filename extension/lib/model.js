@@ -20,6 +20,12 @@ export function summarize(chromeCookies, { domain, namePattern } = {}) {
   return { matched, groups: groupByDomain(matched), bytes: totalSize(matched) };
 }
 
+// A group header counts one host key, and only an exact match addresses it:
+// the domain matcher lets ".example.com" answer for "sub.example.com" too.
+export function filterByHostKey(cookies, hostKey) {
+  return cookies.filter((c) => c.hostKey === hostKey);
+}
+
 // chrome.cookies.remove needs a creation URL; reconstruct it from safe fields.
 export function removeUrl(cookie) {
   const scheme = cookie.secure ? "https" : "http";

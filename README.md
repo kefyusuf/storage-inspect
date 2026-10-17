@@ -60,23 +60,23 @@ src/cli.js           parseCommand, run(argv, deps)    — deps injectable (tests
 ```
 
 ## Browser extension (Manifest V3)
-Under `extension/` there is an MV3 extension for DOM-based visual inspection plus per-cookie / whole-domain deletion. It reuses the pure logic from `src/filter.js` and `src/report.js`.
+Under `extension/` there is an MV3 extension for DOM-based visual inspection plus per-cookie and per-host-group deletion. It reuses the pure logic from `src/filter.js` and `src/report.js`.
 
 Because an extension can only import files inside its own folder, the shared modules are copied into `extension/lib/` (the single source of truth stays in `src/`):
 ```
 npm run build:extension      # src/filter.js, src/report.js → extension/lib/
 ```
-Load it via `chrome://extensions` → Developer mode → "Load unpacked" → select the `extension/` folder. The popup filters by domain/name-regex, groups by host, and deletes through the `chrome.cookies` API; values are never shown.
+Load it via `chrome://extensions` → Developer mode → "Load unpacked" → select the `extension/` folder. The popup filters by domain/name-regex, groups by host, and deletes through the `chrome.cookies` API; values are never shown. A group's "delete all" removes exactly the rows that group listed, under the filter they were listed with.
 ```
 extension/manifest.json       MV3 — permissions: cookies, host_permissions: <all_urls>
-extension/background.js       service worker (module) — ls / remove / removeDomain messages
+extension/background.js       service worker (module) — ls / remove / removeGroup messages
 extension/popup.{html,js,css} inputs + per-host groups + delete buttons
-extension/lib/model.js        toInternal (strips value), summarize, removeUrl, removeParams — pure, tested core
+extension/lib/model.js        toInternal (strips value), summarize, removeUrl, removeParams, filterByHostKey — pure, tested core
 ```
 
 ## Test
 ```
-npm test          # 121 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
+npm test          # 122 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 

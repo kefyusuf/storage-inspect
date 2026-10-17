@@ -1,4 +1,4 @@
-import { summarize, removeParams } from "./lib/model.js";
+import { summarize, removeParams, filterByHostKey } from "./lib/model.js";
 
 const stripLead = (d) => d.replace(/^\./, "");
 
@@ -29,11 +29,14 @@ async function handle(msg) {
     return { ok: (await chrome.cookies.remove(removeParams(msg.cookie))) !== undefined };
   }
 
-  if (msg.type === "removeDomain") {
-    const all = await chrome.cookies.getAll({ domain: stripLead(msg.domain) });
+  // The popup's "delete all" belongs to one group header, so it addresses that
+  // host key — not the domain around it, which would also match parent-domain
+  // cookies that were listed under a different header.
+  if (msg.type === "removeGroup") {
+    const all = await chrome.cookies.getAll({ domain: stripLead(msg.hostKey) });
     const namePattern = msg.nameRegex ? new RegExp(msg.nameRegex) : undefined;
-    const { matched } = summarize(all, { domain: msg.domain, namePattern });
-    return { deleted: await removeEach(matched), wanted: matched.length };
+    const group = filterByHostKey(summarize(all, { namePattern }).matched, msg.hostKey);
+    return { deleted: await removeEach(group), wanted: group.length };
   }
 
   throw new Error(`unknown message type: ${msg.type}`);
