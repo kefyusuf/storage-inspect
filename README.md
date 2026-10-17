@@ -99,3 +99,5 @@ On Windows a running Chromium browser locks its `Cookies` file against sharing, 
 taskkill /IM chrome.exe /F          # Windows
 ```
 `localstorage` is not affected: Chromium shares its LevelDB write-ahead log, so `localstorage ls` and `du` read a live profile.
+
+Firefox is a different case: `cookies.sqlite` is a WAL-mode file, and reading it read-only worked here with Firefox itself running — try a live profile before closing anything. It is not a guarantee: a read-only WAL open still needs SQLite to reach `-wal` and `-shm`, and if that fails on Windows the same lock logic as Chromium applies, so closing Firefox is the fix.
