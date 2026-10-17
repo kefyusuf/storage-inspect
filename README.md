@@ -1,7 +1,7 @@
 # storage-inspect
 
 ![CI](https://github.com/kefyusuf/storage-inspect/actions/workflows/ci.yml/badge.svg)
-![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)
+![node](https://img.shields.io/badge/node-%E2%89%A522.18.0-brightgreen)
 ![deps](https://img.shields.io/badge/dependencies-0-blue)
 
 A dependency-free Node CLI to inspect browser cookies and localStorage — plus a Manifest V3 browser extension.
@@ -10,7 +10,8 @@ A dependency-free Node CLI to inspect browser cookies and localStorage — plus 
 See which sites are hoarding how many cookies, and find the domains you want to clear — but do it without opening a browser, in a scriptable way, and without ever leaking values. Portfolio piece: JavaScript fundamentals + TDD practice (every module is a pure function with its own test).
 
 ## Install
-Node 22+ is enough (`node:sqlite` is built in). No `npm install` needed.
+Node 22.18.0+ is enough (`node:sqlite` is built in). No `npm install` needed.
+That floor is load-bearing: older Node ignores the `readOnly` option that `node:sqlite` uses, so reading a running browser's cookie store would open it for writing instead.
 ```
 cd storage-inspect
 npm link         # optional: then `storage-inspect ...` works from anywhere
@@ -75,7 +76,7 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl �
 
 ## Test
 ```
-npm test          # 113 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model
+npm test          # 116 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 
@@ -86,8 +87,9 @@ Tests never read real browser data: the SQLite integration tests use real `node:
 - **localStorage deletion**: reading is best-effort and partial (see above); no deletion is performed.
 - **Firefox**: Gecko stores cookies in a `moz_cookies` table and keeps localStorage in a different backend, so neither `cookies` nor `localstorage` reads a Firefox profile — the profile path resolves, the command exits with "not supported yet".
 
-## If `du` returns `EBUSY` while the browser is open
-`storage-inspect` first tries to open the store directly read-only, then falls back to copying it; if both fail, the error says "close the browser and retry". You may also need to kill Chrome's background processes:
+## If `cookies` returns `EBUSY` while the browser is open
+On Windows a running Chromium browser locks its `Cookies` file against sharing, so both attempts fail: the read-only open reports `unable to open database file` and the copy fallback reports `EBUSY: resource busy or locked`. The copy still helps on systems where the file is copyable but SQLite refuses the open, not here — closing the browser is the only reliable fix. Background processes keep the lock too, so all of them must go:
 ```
 taskkill /IM chrome.exe /F          # Windows
 ```
+`localstorage` is not affected: Chromium shares its LevelDB write-ahead log, so `localstorage ls` and `du` read a live profile.

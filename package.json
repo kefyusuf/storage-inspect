@@ -8,5 +8,5 @@
     "test": "node --test",
     "build:extension": "node scripts/build-extension.js"
   },
-  "engines": { "node": ">=22" }
+  "engines": { "node": ">=22.18.0" }
 }
