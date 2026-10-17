@@ -22,7 +22,7 @@ npm link         # optional: then `storage-inspect ...` works from anywhere
 storage-inspect cookies ls    [filters]
 storage-inspect cookies du    [filters]
 storage-inspect cookies prune [filters]              # dry-run: shows what would be deleted, deletes nothing
-storage-inspect cookies prune [filters] --force      # actually deletes (SQLite write) — browser must be closed
+storage-inspect cookies prune [filters] --force      # deletes in one SQLite transaction — browser must be closed
 
 storage-inspect localstorage ls [filters]            # Chromium only — the write-ahead log (*.log) tail
 storage-inspect localstorage du [filters]            # totals per origin (compacted .ldb not read)
@@ -76,7 +76,7 @@ extension/lib/model.js        toInternal (strips value), summarize, removeUrl �
 
 ## Test
 ```
-npm test          # 116 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
+npm test          # 118 tests — unit + real node:sqlite integration + localStorage WAL + end-to-end CLI + extension model + package.json/README consistency
 ```
 Tests never read real browser data: the SQLite integration tests use real `node:sqlite` on temp files, the localStorage test builds synthetic `.log` bytes, and the CLI tests inject `readCookies`/`readLocalStorage`/`listDir`. The extension's UI is not tested; its chrome-cookie transform/grouping core (`extension/lib/model.js`) is.
 

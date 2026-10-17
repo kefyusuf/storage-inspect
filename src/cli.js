@@ -14,7 +14,7 @@ const HELP = `storage-inspect — inspect browser cookies / localStorage from th
   storage-inspect cookies ls     [filters]
   storage-inspect cookies du     [filters]
   storage-inspect cookies prune  [filters]              (dry-run: shows what would be deleted)
-  storage-inspect cookies prune  [filters] --force      (actually deletes; close the browser first)
+  storage-inspect cookies prune  [filters] --force      (deletes in one transaction; close the browser first)
 
   storage-inspect localstorage ls [filters]             (chromium only; the write-ahead log tail, .ldb not read)
   storage-inspect localstorage du [filters]             (totals per origin)

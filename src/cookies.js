@@ -66,7 +66,8 @@ export function readCookieDb(sourcePath) {
 // Real deletion: opens the ORIGINAL store read-write and removes every cookie
 // that filterCookies matches (so the domain host-only/subdomain semantics live
 // in exactly one place). Requires the browser to be closed. Returned entries
-// never include the cookie value.
+// never include the cookie value, and only ever list rows SQLite confirmed
+// removing — one transaction, so a failure halfway leaves the store untouched.
 export function deleteCookies(sourcePath, { domain, nameRegex } = {}) {
   let db;
   try {
@@ -83,9 +84,19 @@ export function deleteCookies(sourcePath, { domain, nameRegex } = {}) {
     const matched = filterCookies(cookies, { domain, namePattern: nameRegex });
 
     const del = db.prepare(`DELETE FROM cookies WHERE rowid = ?`);
-    for (const c of matched) del.run(c.id);
+    db.exec(`BEGIN IMMEDIATE`);
+    const gone = [];
+    try {
+      for (const c of matched) {
+        if (del.run(c.id).changes === 1) gone.push(c);
+      }
+      db.exec(`COMMIT`);
+    } catch (err) {
+      db.exec(`ROLLBACK`);
+      throw err;
+    }
 
-    const removed = matched.map(({ id, ...safe }) => safe);
+    const removed = gone.map(({ id, ...safe }) => safe);
     return { deleted: removed.length, removed };
   } finally {
     db.close();

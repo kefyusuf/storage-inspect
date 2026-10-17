@@ -173,3 +173,43 @@ test("deleteCookies removed entries never expose value", () => {
   const res = deleteCookies(path, { domain: "a.com" });
   assert.equal(JSON.stringify(res.removed).includes("SUPERVALUE"), false);
 });
+
+// A BEFORE DELETE trigger is the only way to make real SQLite disagree with the
+// caller mid-batch: RAISE(ABORT) fails a statement, RAISE(IGNORE) skips a row.
+function withTrigger(path, sql) {
+  const db = new DatabaseSync(path);
+  db.exec(sql);
+  db.close();
+  return path;
+}
+
+test("deleteCookies rolls the whole batch back when a delete fails halfway", () => {
+  const path = withTrigger(
+    makeCookieDb([
+      { host_key: "a.com", name: "one", value: "1", path: "/" },
+      { host_key: "a.com", name: "two", value: "2", path: "/" },
+      { host_key: "a.com", name: "three", value: "3", path: "/" },
+    ]),
+    `CREATE TRIGGER abort_on_two BEFORE DELETE ON cookies WHEN OLD.name = 'two'
+     BEGIN SELECT RAISE(ABORT, 'simulated failure'); END`,
+  );
+  assert.throws(() => deleteCookies(path, { domain: "a.com" }), /simulated failure/);
+  // "one" was deleted before the failure: a half-applied prune is worse than none.
+  assert.deepEqual(readCookieDb(path).map((c) => c.name), ["one", "two", "three"]);
+});
+
+test("deleteCookies counts only the rows SQLite actually removed", () => {
+  const path = withTrigger(
+    makeCookieDb([
+      { host_key: "a.com", name: "one", value: "1", path: "/" },
+      { host_key: "a.com", name: "two", value: "2", path: "/" },
+      { host_key: "a.com", name: "three", value: "3", path: "/" },
+    ]),
+    `CREATE TRIGGER skip_two BEFORE DELETE ON cookies WHEN OLD.name = 'two'
+     BEGIN SELECT RAISE(IGNORE); END`,
+  );
+  const res = deleteCookies(path, { domain: "a.com" });
+  assert.equal(res.deleted, 2, "a skipped delete is not a deletion");
+  assert.deepEqual(res.removed.map((c) => c.name), ["one", "three"]);
+  assert.deepEqual(readCookieDb(path).map((c) => c.name), ["two"]);
+});
