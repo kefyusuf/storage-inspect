@@ -78,7 +78,7 @@ function snappyLiterals(buf) {
 
 const handleOf = (offset, size) => Buffer.concat([varint(offset), varint(size)]);
 
-function makeTable({ entries, rawBlocks, indexKeys, dataSnappy = false, dataType = dataSnappy ? 1 : 0, indexSnappy = false, magic = MAGIC }) {
+function makeTable({ entries, rawBlocks, dataSnappy = false, dataType = dataSnappy ? 1 : 0, indexSnappy = false, magic = MAGIC }) {
   const blocks = rawBlocks ?? (Array.isArray(entries[0]) ? entries : [entries]).map(blockOf);
   const parts = [];
   const handles = [];
@@ -95,10 +95,9 @@ function makeTable({ entries, rawBlocks, indexKeys, dataSnappy = false, dataType
   const metaHandle = handleOf(offset, emptyBlock.length);
   offset += emptyBlock.length + 5;
 
-  const indexEntries = blocks.map((block, i) => ({
-    key: (indexKeys ?? [])[i] ?? Buffer.from(`k${i}`),
-    value: handles[i],
-  }));
+  // A real index entry key is the largest internal key of the block it points
+  // at; this reader only follows the handle, so the fixture keeps them short.
+  const indexEntries = handles.map((value, i) => ({ key: Buffer.from(`k${i}`), value }));
   const indexBlock = blockOf(indexEntries);
   const indexBody = indexSnappy ? snappyLiterals(indexBlock) : indexBlock;
   parts.push(indexBody, Buffer.from([indexSnappy ? 1 : 0]), fixed32(0));
@@ -238,9 +237,11 @@ test("a Snappy index block is inflated too", () => {
 });
 
 test("a file that is not an sstable says so", () => {
-  const bytes = makeTable({ entries: [{ key: internalKey("a", 1, 1), value: Buffer.alloc(1) }] });
-  const path = writeFile("wrong.ldb", Buffer.concat([bytes.subarray(0, bytes.length - 8), fixed32(1), fixed32(2)]));
-  assert.throws(() => readSstEntries(path), /sstable|magic/i);
+  const path = writeFile(
+    "wrong.ldb",
+    makeTable({ entries: [{ key: internalKey("a", 1, 1), value: Buffer.alloc(1) }], magic: 0x00000002_00000001n }),
+  );
+  assert.throws(() => readSstEntries(path), /not an sstable.*magic/i);
 });
 
 test("a table shorter than a footer is refused", () => {
