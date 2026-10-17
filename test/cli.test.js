@@ -121,6 +121,18 @@ test("run: cookies prune --force deletes via deleteCookies", async () => {
   assert.match(args.path, /Network\/Cookies$/);
 });
 
+test("run: a failed prune batch says nothing was deleted", async () => {
+  const { code, out } = await run(["cookies", "prune", "--domain", "a.com", "--force"], {
+    ...deps(),
+    readCookies: () => SAMPLE,
+    deleteCookies: () => { throw new Error("simulated failure"); },
+  });
+  assert.equal(code, 1);
+  assert.match(out, /simulated failure/);
+  // deleteCookies rolls the batch back, so the user must not be left guessing.
+  assert.match(out, /no cookies were deleted/);
+});
+
 test("run: prune output never leaks cookie values", async () => {
   const withValue = [{ hostKey: "a.com", name: "s", value: "TOPSECRET", path: "/", size: 8 }];
   const dry = await run(["cookies", "prune", "--json", "--domain", "a.com"], { ...deps(), readCookies: () => withValue });

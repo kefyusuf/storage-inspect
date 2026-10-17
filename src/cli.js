@@ -154,7 +154,7 @@ function runCookies(cmd, profile, deps) {
   try {
     result = deps.deleteCookies(storePath, { domain: cmd.opts.domain, nameRegex: cmd.opts.nameRegex });
   } catch (err) {
-    return { code: 1, out: `storage-inspect: ${err.message}` };
+    return { code: 1, out: `storage-inspect: ${err.message} (no cookies were deleted)` };
   }
   if (cmd.opts.json) {
     return { code: 0, out: JSON.stringify({ deleted: result.deleted, removed: result.removed }, null, 2) };
