@@ -98,18 +98,29 @@ function decodeText(buf) {
 
 // Map rows are "<storage_key>\0<format><item name>"; metadata rows ("META:",
 // "METAACCESS:") hold no 0x00 at all and are not user data.
+//
+// A value is only ever measured: its format byte is validated and its payload
+// length taken, but the text is never decoded, because nothing in this program
+// prints it — the same stance cookies.js takes with `length(value)` in SQL.
+function valueLength(buf) {
+  const format = buf[0];
+  const payload = buf.subarray(1);
+  if (format === FORMAT_LATIN1) return payload.length;
+  if (format === FORMAT_UTF16 && payload.length % 2 === 0) return payload.length;
+  return null;
+}
+
 export function decodeEntry(keyBuf, valueBuf) {
   const sep = keyBuf.indexOf(0x00);
   if (sep === -1) return null;
   const name = decodeText(keyBuf.subarray(sep + 1));
   if (!name) return null;
-  const value = valueBuf === null ? { text: null, bytes: 0 } : decodeText(valueBuf);
-  if (!value) return null;
+  const value = valueBuf === null ? 0 : valueLength(valueBuf);
+  if (value === null) return null;
   return {
     origin: keyBuf.subarray(0, sep).toString("utf8"),
     key: name.text,
-    value: value.text,
-    size: name.bytes + value.bytes,
+    size: name.bytes + value,
   };
 }
 

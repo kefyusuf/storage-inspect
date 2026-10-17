@@ -138,21 +138,40 @@ test("parseWriteBatch handles multi-byte varint lengths", () => {
   assert.equal(e.value.length, 200);
 });
 
-test("decodeEntry strips the format byte and decodes UTF-16", () => {
-  const e = decodeEntry(mapKey("https://a.com", "color", UTF16), mapValue("café☕", UTF16));
-  assert.deepEqual(e, { origin: "https://a.com", key: "color", value: "café☕", size: 10 + 10 });
+test("decodeEntry strips the format byte and decodes a UTF-16 name", () => {
+  const e = decodeEntry(mapKey("https://a.com", "café☕", UTF16), mapValue("whatever", UTF16));
+  assert.equal(e.key, "café☕");
+  assert.equal(e.size, 10 + 16); // 5 UTF-16 code units in the name, 8 in the value
 });
 
-test("decodeEntry decodes Latin-1 names and values", () => {
+test("decodeEntry decodes a Latin-1 name", () => {
   const e = decodeEntry(mapKey("https://a.com", "base_URL"), mapValue("red", LATIN1));
-  assert.deepEqual(e, { origin: "https://a.com", key: "base_URL", value: "red", size: 8 + 3 });
+  assert.deepEqual(e, { origin: "https://a.com", key: "base_URL", size: 8 + 3 });
 });
 
 test("decodeEntry keeps a format byte that is part of the name", () => {
   // an item name may legitimately begin with U+0001; only ONE byte is the tag
   const e = decodeEntry(mapKey("https://a.com", "\u0001odd"), mapValue("x", LATIN1));
   assert.equal(e.key, "\u0001odd");
-  assert.equal(e.value, "x");
+  assert.equal(e.size, 4 + 1);
+});
+
+// Nothing prints a value and sizes come from its byte length, so the reader must
+// measure the payload rather than decode it.
+test("decodeEntry measures the value instead of decoding it", () => {
+  const e = decodeEntry(mapKey("https://a.com", "color", UTF16), mapValue("café☕", UTF16));
+  assert.deepEqual(e, { origin: "https://a.com", key: "color", size: 10 + 10 });
+  assert.ok(!("value" in e), "the value text must never reach the entry");
+});
+
+test("decodeEntry rejects a value with an unknown format byte", () => {
+  const value = Buffer.concat([Buffer.from([0x07]), Buffer.from("guess")]);
+  assert.equal(decodeEntry(mapKey("https://a.com", "k"), value), null);
+});
+
+test("decodeEntry rejects an odd-length UTF-16 value", () => {
+  const value = Buffer.concat([Buffer.from([UTF16]), Buffer.from([0x61, 0x00, 0x62])]);
+  assert.equal(decodeEntry(mapKey("https://a.com", "k"), value), null);
 });
 
 test("decodeEntry rejects an unknown format byte instead of guessing", () => {
@@ -182,8 +201,8 @@ test("readLocalStorage decodes Full-record entries from a .log file", () => {
     readFile: (name) => files[name],
   });
   assert.deepEqual(
-    entries.map((e) => `${e.origin}|${e.key}|${e.value}`),
-    ["https://a.com|color|red", "https://b.com|theme|dark"],
+    entries.map((e) => `${e.origin}|${e.key}|${e.size}`),
+    ["https://a.com|color|11", "https://b.com|theme|13"],
   );
 });
 
@@ -219,10 +238,11 @@ test("readLocalStorage merges and last-write-wins across multiple logs", () => {
   const key = mapKey("https://a.com", "k");
   const files = {
     "000003.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("old") }]))),
-    "000007.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("new") }]))),
+    // longer on purpose: the size is what shows the second log won, since no text survives
+    "000007.log": padToBlock(record(1, buildWriteBatch([{ key, value: mapValue("newer") }]))),
   };
   const entries = readLocalStorage({ listFiles: () => Object.keys(files), readFile: (n) => files[n] });
-  assert.deepEqual(entries, [{ origin: "https://a.com", key: "k", value: "new", size: 1 + 6 }]);
+  assert.deepEqual(entries, [{ origin: "https://a.com", key: "k", size: 1 + 10 }]);
 });
 
 test("readLocalStorage computes size from key + value bytes, format tags excluded", () => {
@@ -239,9 +259,9 @@ test("readLocalStorage drops a row whose format byte is unknown", () => {
 });
 
 const LS = [
-  { origin: "https://a.com", key: "x", value: "1", size: 3 },
-  { origin: "https://a.com", key: "y", value: "22", size: 4 },
-  { origin: "https://sub.b.com", key: "z", value: "3", size: 3 },
+  { origin: "https://a.com", key: "x", size: 3 },
+  { origin: "https://a.com", key: "y", size: 4 },
+  { origin: "https://sub.b.com", key: "z", size: 3 },
 ];
 
 test("filterLocalStorage matches by origin host substring", () => {
